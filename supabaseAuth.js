@@ -68,19 +68,17 @@ module.exports = async (supabase, tableName = 'whatsapp_auth') => {
                     return data;
                 },
                 set: async (data) => {
-                    const tasks = [];
                     for (const category in data) {
                         for (const id in data[category]) {
                             const value = data[category][id];
                             const key = `${category}-${id}`;
                             if (value) {
-                                tasks.push(writeData(value, key));
+                                await writeData(value, key);
                             } else {
-                                tasks.push(removeData(key));
+                                await removeData(key);
                             }
                         }
                     }
-                    await Promise.all(tasks);
                 }
             }
         },
