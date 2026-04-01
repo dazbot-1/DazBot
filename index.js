@@ -15,7 +15,12 @@ const useSupabaseAuthState = require('./supabaseAuth');
 // --- HIDE LIBSIGNAL NOISE ---
 const originalLog = console.log;
 const originalError = console.error;
-const noiseWords = ['Session error', 'Bad MAC', 'Closing session', 'prekey bundle', 'Failed to decrypt'];
+const noiseWords = [
+    'Session error', 'Bad MAC', 'Closing session', 'prekey bundle', 'Failed to decrypt',
+    'Decrypted message with closed session', 'Closing open session', 'Removing old closed session',
+    '_chains', 'registrationId', 'currentRatchet', 'indexInfo', 'ephemeralKeyPair',
+    'lastRemoteEphemeralKey', 'previousCounter', 'rootKey', 'baseKey', 'remoteIdentityKey'
+];
 function isNoise(args) {
     try {
         const str = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
@@ -116,14 +121,19 @@ async function connectToWhatsApp() {
         }
 
         if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('[INFO] Connection closed due to', lastDisconnect.error, ', reconnecting:', shouldReconnect);
-            // Reconnect if not logged out
+            const statusCode = (lastDisconnect.error)?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            const isConflict = statusCode === 440;
+
+            console.log('[INFO] Connection closed, code:', statusCode, '| Reconnecting:', shouldReconnect);
+
             if (shouldReconnect) {
-                console.log('[INFO] Reconnexion dans 5 secondes...');
-                setTimeout(() => connectToWhatsApp(), 5000);
+                // Conflict = double instance (Render redeploy). Wait 30s for old session to die.
+                const delay = isConflict ? 30_000 : 5_000;
+                console.log(`[INFO] Reconnexion dans ${delay / 1000} secondes${isConflict ? ' (conflit de session détecté)' : ''}...`);
+                setTimeout(() => connectToWhatsApp(), delay);
             } else {
-                console.log('[INFO] Logged out manually. Empty your Supabase "whatsapp_auth" table and restart the bot to login again.');
+                console.log('[INFO] Session déconnectée manuellement. Vide la table "whatsapp_auth" dans Supabase et redémarre.');
             }
         } else if (connection === 'open') {
             console.log('[INFO] Successfully connected to WhatsApp!');
