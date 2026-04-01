@@ -128,8 +128,7 @@ async function connectToWhatsApp() {
             console.log('[INFO] Connection closed, code:', statusCode, '| Reconnecting:', shouldReconnect);
 
             if (shouldReconnect) {
-                // Conflict = double instance (Render redeploy). Wait 30s for old session to die.
-                const delay = isConflict ? 30_000 : 5_000;
+                const delay = 5_000;
                 console.log(`[INFO] Reconnexion dans ${delay / 1000} secondes${isConflict ? ' (conflit de session détecté)' : ''}...`);
                 setTimeout(() => connectToWhatsApp(), delay);
             } else {
