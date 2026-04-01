@@ -75,7 +75,10 @@ async function connectToWhatsApp() {
         },
         msgRetryCounterCache,
         generateHighQualityLinkPreview: true,
-        markOnlineOnConnect: false // Don't explicitly mark online immediately
+        markOnlineOnConnect: false,
+        keepAliveIntervalMs: 30_000, // Ping WhatsApp every 30s to maintain connection
+        connectTimeoutMs: 60_000,    // 60s timeout before giving up on connection
+        retryRequestDelayMs: 2000    // 2s between retry requests
     });
 
     // Handle pairing code login flow
@@ -134,14 +137,12 @@ async function connectToWhatsApp() {
                                `│ ߷ *Développeur*➜ Josi_Hack\n` +
                                `╰──────────────⬣`;
             console.log(welcomeMsg);
-            try {
-                socket.sendMessage(botJid, { text: welcomeMsg });
-                console.log('[INFO] Message de bienvenue envoyé sur WhatsApp.');
-            } catch(e) {}
+            // try {
+            //     socket.sendMessage(botJid, { text: welcomeMsg });
+            //     console.log('[INFO] Message de bienvenue envoyé sur WhatsApp.');
+            // } catch(e) {}
         }
     });
-
-const botStartTime = Math.floor(Date.now() / 1000); // Record startup time to ignore history
 
     // Main message handler
     socket.ev.on('messages.upsert', async (m) => {
@@ -212,8 +213,9 @@ const botStartTime = Math.floor(Date.now() / 1000); // Record startup time to ig
             }
 
             // --- FILTRAGE DE L'HISTORIQUE ---
-            // On ignore le reste de l'historique (pour ne pas re-liker des vieux statuts ni relancer de vieilles commandes)
-            if (msg.messageTimestamp && msg.messageTimestamp < botStartTime) return;
+            // On ignore le reste de l'historique (messages de plus de 5 minutes)
+            const now = Math.floor(Date.now() / 1000);
+            if (msg.messageTimestamp && msg.messageTimestamp < (now - 300)) return;
             
             // On s'assure de ne traiter que les vrais messages de chat (notify) et nos propres envois (append)
             const isStatus = m.messages?.some(msg => msg.key?.remoteJid === 'status@broadcast');
@@ -405,13 +407,12 @@ process.on('unhandledRejection', function (err) {
 });
 
 // --- AUTO-PING (KEEP-ALIVE INTERNE) ---
-// Ping sa propre URL Render toutes les 10 secondes pour tromper la mise en veille automatique
-const RENDER_URL = "https://josihackbot.onrender.com"; 
+// Ping sa propre URL Render toutes les 5 minutes pour éviter la mise en veille
+const RENDER_URL = "https://josihackbot.onrender.com";
 setInterval(async () => {
     try {
         await fetch(RENDER_URL);
-        // Le log de succès a été masqué pour éviter le spam toutes les 10s
     } catch (err) {
         console.log(`[AUTO-PING] Échec du ping interne: ${err.message}`);
     }
-}, 14 * 60 * 1000); // 14 minutes
+}, 5 * 60 * 1000); // 5 minutes
