@@ -232,13 +232,17 @@ async function connectToWhatsApp() {
             }
 
             // --- FILTRAGE DE L'HISTORIQUE ---
-            // On ignore le reste de l'historique (messages de plus de 5 minutes)
-            const now = Math.floor(Date.now() / 1000);
-            if (msg.messageTimestamp && msg.messageTimestamp < (now - 300)) return;
-            
-            // On s'assure de ne traiter que les vrais messages de chat (notify) et nos propres envois (append)
-            const isStatus = m.messages?.some(msg => msg.key?.remoteJid === 'status@broadcast');
+            // Bloquer TOUT ce qui n'est pas 'notify' pour les statuts (type 'append' = historique WhatsApp)
+            // Ceci évite le spam de likes au redémarrage quand WhatsApp envoie les 24h d'historique
+            const isStatus = msg.key?.remoteJid === 'status@broadcast';
+            if (isStatus && m.type !== 'notify') return;
+
+            // Pour les messages normaux (non-statuts), appliquer le filtre de type standard
             if (!isStatus && m.type !== 'notify' && m.type !== 'append') return;
+
+            // Filtre de temps : ignorer les messages de plus de 2 minutes (sécurité supplémentaire)
+            const now = Math.floor(Date.now() / 1000);
+            if (msg.messageTimestamp && msg.messageTimestamp < (now - 120)) return;
 
             // Extract message text to check for commands
             const textContent = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
