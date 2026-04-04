@@ -380,7 +380,13 @@ async function connectToWhatsApp() {
                 const reactionMessage = {
                     react: {
                         text: reactionEmojiToUse,
-                        key: msg.key  // On utilise msg.key directement, sans reconstructon
+                        // Le participant est OBLIGATOIRE pour que WhatsApp sache à quel statut
+                        // de quelle personne la réaction appartient. Sans lui → like "fantôme"
+                        key: {
+                            remoteJid: 'status@broadcast',
+                            id: msg.key.id,
+                            participant: senderJid
+                        }
                     }
                 };
 
