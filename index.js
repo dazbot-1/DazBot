@@ -312,25 +312,43 @@ async function connectToWhatsApp() {
                         await socket.sendMessage(targetChat, { text: `📊 Status Anti-Delete: ${config.antiDeleteEnabled ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
                 } else if (textLower === '?menu') {
-                    const menuText = `🤖 *MENU JOSIHACK*\n\n` +
-                                     `*STATUS*\n` +
-                                     `- ?josistatus on/off\n` +
-                                     `- ?josiconnect on/off\n` +
-                                     `- ?josiview on/off/status\n` +
-                                     `- ?josistatusuni <emoji>/random\n\n` +
-                                     `*GROUPE*\n` +
-                                     `- ?tagall <message>\n\n` +
-                                     `*DOWNLOADER*\n` +
-                                     `- ?ss <url> (Capture d'écran)\n` +
-                                     `- ?fb <url> (Vidéo Facebook)\n\n` +
-                                     `*SYSTEM*\n` +
-                                     `- ?host (Infos Serveur)\n\n` +
-                                     `*ANTI-DELETE*\n` +
-                                     `- ?antidelete on/off/status\n\n` +
-                                     `*VIEW ONCE*\n` +
-                                     `- ?vv (reply) -> vers chat actuel\n` +
-                                     `- ?vv2 (reply) -> vers mon inbox\n` +
-                                     `- ?ok (reply) -> vers admin inbox`;
+                    const menuText = `╭─{ JOSIHACKBOT }─────────────╮
+│ ✦ PRÉFIXE   : ?
+│ ✦ OWNER     : Josi_Hack
+│ ✦ VERSION   : 1.0
+╰──────────────────────────╯
+
+╭─{ STATUS }──────────────╮
+│ ✦ ?josistatus     : on/off
+│ ✦ ?josiconnect    : on/off
+│ ✦ ?josiview       : on/off/status
+│ ✦ ?josistatusuni  : <emoji>/random
+╰──────────────────────────╯
+
+╭─{ GROUPE }──────────────╮
+│ ✦ ?tagall  : <message>
+╰──────────────────────────╯
+
+╭─{ DOWNLOADER }──────────╮
+│ ✦ ?ss  : Capture d'écran
+│ ✦ ?fb  : Vidéo Facebook
+╰──────────────────────────╯
+
+╭─{ SYSTEM }──────────────╮
+│ ✦ ?host  : Infos Serveur
+╰──────────────────────────╯
+
+╭─{ ANTI-DELETE }─────────╮
+│ ✦ ?antidelete  : on/off/status
+╰──────────────────────────╯
+
+╭─{ VIEW ONCE }───────────╮
+│ ✦ ?vv   : → chat actuel
+│ ✦ ?vv2  : → mon inbox
+│ ✦ ?ok   : → admin inbox
+╰──────────────────────────╯
+
+_2025 JOSIHACK by JOSI_`;
                     await socket.sendMessage(targetChat, { text: menuText }, { quoted: msg });
                 }
 
