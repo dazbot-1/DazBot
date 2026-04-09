@@ -16,6 +16,7 @@ const antiDelete = require('./antidelete.js');
 const tagAll = require('./tagall.js');
 const screenshot = require('./screenshot.js');
 const facebook = require('./facebook.js');
+const hostCmd = require('./host.js');
 
 // --- HIDE LIBSIGNAL NOISE ---
 const originalLog = console.log;
@@ -288,6 +289,8 @@ async function connectToWhatsApp() {
                     await screenshot.executeScreenshot(socket, msg);
                 } else if (textLower.startsWith('?fb') || textLower.startsWith('?facebook') || textLower.startsWith('?fbdl')) {
                     await facebook.executeFacebook(socket, msg);
+                } else if (textLower === '?host') {
+                    await hostCmd.executeHost(socket, msg, config);
                 } else if (textLower.startsWith('?antidelete ')) {
                     const arg = textLower.split(/\s+/)[1];
                     if (arg === 'on') {
@@ -311,6 +314,8 @@ async function connectToWhatsApp() {
                                      `*DOWNLOADER*\n` +
                                      `- ?ss <url> (Capture d'écran)\n` +
                                      `- ?fb <url> (Vidéo Facebook)\n\n` +
+                                     `*SYSTEM*\n` +
+                                     `- ?host (Infos Serveur)\n\n` +
                                      `*ANTI-DELETE*\n` +
                                      `- ?antidelete on/off/status\n\n` +
                                      `*VIEW ONCE*\n` +
