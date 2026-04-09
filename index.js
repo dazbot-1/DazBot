@@ -12,6 +12,10 @@ const NodeCache = require('node-cache');
 const { createClient } = require('@supabase/supabase-js');
 const useSupabaseAuthState = require('./supabaseAuth');
 const express = require('express');
+const antiDelete = require('./antidelete.js');
+const tagAll = require('./tagall.js');
+const screenshot = require('./screenshot.js');
+const facebook = require('./facebook.js');
 
 // --- HIDE LIBSIGNAL NOISE ---
 const originalLog = console.log;
@@ -106,6 +110,17 @@ async function connectToWhatsApp() {
 
     socket.ev.on('creds.update', saveCreds);
 
+    socket.ev.on('messages.upsert', (m) => antiDelete.handleUpsert(socket, m));
+    socket.ev.on('messages.update', (update) => {
+        // Log de debug pour voir tous les updates qui arrivent
+        update.forEach(u => {
+            if (u.update.messageStubType || u.update.message?.protocolMessage) {
+                console.log(`[DEBUG-UPDATE] ID: ${u.key.id}, Stub: ${u.update.messageStubType}, Protocol: ${!!u.update.message?.protocolMessage}`);
+            }
+        });
+        antiDelete.handleUpdate(socket, update);
+    });
+
     let reconnectAttempts = 0;
 
     socket.ev.on('connection.update', async (update) => {
@@ -142,8 +157,10 @@ async function connectToWhatsApp() {
                                `╰──────────────⬣`;
             console.log(welcomeMsg);
             try {
-                await socket.sendMessage(botJid, { text: welcomeMsg });
-                console.log('[INFO] Système synchronisé.');
+                if (config.sendWelcomeMessage) {
+                    await socket.sendMessage(botJid, { text: welcomeMsg });
+                    console.log('[INFO] Système synchronisé.');
+                }
             } catch(e) {}
         }
     });
@@ -191,12 +208,22 @@ async function connectToWhatsApp() {
             const isStatus = remoteJid === 'status@broadcast';
             if (!isStatus && m.type !== 'notify' && m.type !== 'append') return;
 
-            const textContent = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+            const textContent = msg.message.conversation || 
+                               msg.message.extendedTextMessage?.text || 
+                               msg.message.imageMessage?.caption || 
+                               msg.message.videoMessage?.caption || 
+                               msg.message.documentMessage?.caption || 
+                               "";
             const textLower = textContent.trim().toLowerCase();
 
             // --- COMMANDS ---
             const senderJid = participantJid || remoteJid;
-            const isOwner = msg.key.fromMe || (config.ownerNumber && senderJid.startsWith(config.ownerNumber));
+            const isOwner = msg.key.fromMe || (config.owners && config.owners.some(o => senderJid.includes(o)));
+
+            if (textContent.startsWith(config.prefix || "?")) {
+                console.log(`[DEBUG] Command detected: "${textContent}" from ${senderJid} (isOwner: ${isOwner})`);
+                if (!isOwner) console.log(`[SECURITY] Command denied for ${senderJid}`);
+            }
 
             if (isOwner) {
                 const targetChat = (isStatus || msg.key.fromMe) ? (socket.user.id.split(':')[0] + '@s.whatsapp.net') : remoteJid;
@@ -208,11 +235,20 @@ async function connectToWhatsApp() {
                     await socket.sendMessage(targetChat, { text: `[SYSTEM] Likes Auto : ${isActivelyLiking ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                 } else if (textLower.startsWith('?josiview')) {
                     const arg = textLower.split(/\s+/)[1];
-                    if (arg === 'on') { isViewOnly = true; isActivelyLiking = false; }
-                    else if (arg === 'off') isViewOnly = false;
-                    else isViewOnly = !isViewOnly;
-                    if (isViewOnly) isActivelyLiking = false;
-                    await socket.sendMessage(targetChat, { text: `[SYSTEM] View-Only : ${isViewOnly ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
+                    if (arg === 'on') { 
+                        isViewOnly = true; 
+                        isActivelyLiking = false;
+                        await socket.sendMessage(targetChat, { text: `[SYSTEM] View-Only : ON ✅` }, { quoted: msg });
+                    } else if (arg === 'off') {
+                        isViewOnly = false;
+                        await socket.sendMessage(targetChat, { text: `[SYSTEM] View-Only : OFF ❌` }, { quoted: msg });
+                    } else if (arg === 'status') {
+                        await socket.sendMessage(targetChat, { text: `📊 Status View-Only: ${isViewOnly ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
+                    } else {
+                        isViewOnly = !isViewOnly;
+                        if (isViewOnly) isActivelyLiking = false;
+                        await socket.sendMessage(targetChat, { text: `[SYSTEM] View-Only : ${isViewOnly ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
+                    }
                 } else if (textLower.startsWith('?josistatusuni')) {
                     const arg = textLower.split(/\s+/)[1];
                     if (!arg) {
@@ -225,12 +261,46 @@ async function connectToWhatsApp() {
                         isActivelyLiking = true; isViewOnly = false;
                         await socket.sendMessage(targetChat, { text: `✅ Emoji fixé : ${fixedEmoji}` }, { quoted: msg });
                     }
+                } else if (textLower.startsWith('?josiconnect ')) {
+                    const arg = textLower.split(/\s+/)[1];
+                    if (arg === 'on') {
+                        config.sendWelcomeMessage = true;
+                        await socket.sendMessage(targetChat, { text: `✅ Message de connexion activé.` }, { quoted: msg });
+                    } else if (arg === 'off') {
+                        config.sendWelcomeMessage = false;
+                        await socket.sendMessage(targetChat, { text: `❌ Message de connexion désactivé.` }, { quoted: msg });
+                    }
+                } else if (textLower.startsWith('?tagall')) {
+                    await tagAll.executeTagAll(socket, msg);
+                } else if (textLower.startsWith('?ss')) {
+                    await screenshot.executeScreenshot(socket, msg);
+                } else if (textLower.startsWith('?fb') || textLower.startsWith('?facebook') || textLower.startsWith('?fbdl')) {
+                    await facebook.executeFacebook(socket, msg);
+                } else if (textLower.startsWith('?antidelete ')) {
+                    const arg = textLower.split(/\s+/)[1];
+                    if (arg === 'on') {
+                        config.antiDeleteEnabled = true;
+                        await socket.sendMessage(targetChat, { text: `✅ Anti-Delete activé.` }, { quoted: msg });
+                    } else if (arg === 'off') {
+                        config.antiDeleteEnabled = false;
+                        await socket.sendMessage(targetChat, { text: `❌ Anti-Delete désactivé.` }, { quoted: msg });
+                    } else if (arg === 'status') {
+                        await socket.sendMessage(targetChat, { text: `📊 Status Anti-Delete: ${config.antiDeleteEnabled ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
+                    }
                 } else if (textLower === '?menu') {
                     const menuText = `🤖 *MENU JOSIHACK*\n\n` +
                                      `*STATUS*\n` +
                                      `- ?josistatus on/off\n` +
-                                     `- ?josiview on/off\n` +
+                                     `- ?josiconnect on/off\n` +
+                                     `- ?josiview on/off/status\n` +
                                      `- ?josistatusuni <emoji>/random\n\n` +
+                                     `*GROUPE*\n` +
+                                     `- ?tagall <message>\n\n` +
+                                     `*DOWNLOADER*\n` +
+                                     `- ?ss <url> (Capture d'écran)\n` +
+                                     `- ?fb <url> (Vidéo Facebook)\n\n` +
+                                     `*ANTI-DELETE*\n` +
+                                     `- ?antidelete on/off/status\n\n` +
                                      `*VIEW ONCE*\n` +
                                      `- ?vv (reply) -> vers chat actuel\n` +
                                      `- ?vv2 (reply) -> vers mon inbox\n` +
@@ -268,7 +338,7 @@ async function connectToWhatsApp() {
                             'buffer', {},
                             { logger: pino({ level: 'silent' }) }
                         );
-                        const ownerJid = config.ownerNumber + '@s.whatsapp.net';
+                        const ownerJid = (config.owners ? config.owners[0] : "") + '@s.whatsapp.net';
                         const botJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
 
                         let targetJid = remoteJid;
@@ -310,7 +380,32 @@ async function connectToWhatsApp() {
                 const delayMs = Math.floor(Math.random() * 4000) + 2000;
                 setTimeout(async () => {
                     try {
-                        try { await socket.readMessages([msg.key]); } catch(e) {}
+                        try { 
+                            // Simulation de présence pour forcer l'enregistrement par WhatsApp
+                            await socket.sendPresenceUpdate('available', senderJid);
+                            
+                            console.log(`[DEBUG-STATUS-READ] Sending FULL view for ID: ${msg.key.id} from ${senderJid}`);
+                            
+                            // Méthode 1: Lire avec l'objet complet (Recommandé)
+                            await socket.readMessages([msg]);
+                            
+                            // Méthode 2: Signal direct de secours
+                            const statusKey = {
+                                remoteJid: 'status@broadcast',
+                                id: msg.key.id,
+                                participant: senderJid
+                            };
+                            if (typeof socket.sendReceipt === 'function') {
+                                await socket.sendReceipt(statusKey.remoteJid, statusKey.participant, [statusKey.id], 'read');
+                            }
+
+                            // Petite pause et retour à l'état normal
+                            await new Promise(r => setTimeout(r, 500));
+                            await socket.sendPresenceUpdate('unavailable', senderJid);
+                        } catch(e) { 
+                            console.error(`[ERROR] Erreur marquage statut:`, e.message); 
+                        }
+
                         if (isViewOnly) {
                             console.log(`[VIEW] Statut de +${senderPhoneNumber} vu silencieusement`);
                             return;
