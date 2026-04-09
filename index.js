@@ -25,7 +25,8 @@ const noiseWords = [
     'Session error', 'Bad MAC', 'Closing session', 'prekey bundle', 'Failed to decrypt',
     'Decrypted message with closed session', 'Closing open session', 'Removing old closed session',
     '_chains', 'registrationId', 'currentRatchet', 'indexInfo', 'ephemeralKeyPair',
-    'lastRemoteEphemeralKey', 'previousCounter', 'rootKey', 'baseKey', 'remoteIdentityKey'
+    'lastRemoteEphemeralKey', 'previousCounter', 'rootKey', 'baseKey', 'remoteIdentityKey',
+    'SessionEntry', 'pendingPreKey', 'preKeyId', 'signedKeyId'
 ];
 function isNoise(args) {
     try {
