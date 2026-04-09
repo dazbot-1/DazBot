@@ -32,10 +32,10 @@ function isNoise(args) {
     try {
         const str = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
         return noiseWords.some(w => str.includes(w));
-    } catch(e) { return false; }
+    } catch (e) { return false; }
 }
-console.log = function (...args) { if(isNoise(args)) return; originalLog.apply(console, args); };
-console.error = function (...args) { if(isNoise(args)) return; originalError.apply(console, args); };
+console.log = function (...args) { if (isNoise(args)) return; originalLog.apply(console, args); };
+console.error = function (...args) { if (isNoise(args)) return; originalError.apply(console, args); };
 
 // Setup memory cache to avoid performance/duplicate issues internally for Baileys
 const msgRetryCounterCache = new NodeCache();
@@ -45,9 +45,9 @@ const reactedStatusCache = new Set();
 const CACHE_MAX_SIZE = 1000;
 const botStartTime = Math.floor(Date.now() / 1000);
 
-let isActivelyLiking = true; 
-let fixedEmoji = null; 
-let isViewOnly = false; 
+let isActivelyLiking = true;
+let fixedEmoji = null;
+let isViewOnly = false;
 let activeSocket = null;
 
 // Helper to check if a number is allowed based on whitelist and blacklist
@@ -66,7 +66,7 @@ async function connectToWhatsApp() {
 
     console.log('[INFO] Loading WhatsApp Session from Supabase Cloud...');
     const { state, saveCreds } = await useSupabaseAuthState(supabase, 'whatsapp_auth');
-    
+
     const { version, isLatest } = await fetchLatestBaileysVersion();
     console.log(`[INFO] Using WhatsApp v${version.join('.')}, isLatest: ${isLatest}`);
 
@@ -97,7 +97,7 @@ async function connectToWhatsApp() {
             console.error('[ERROR] phone number issues in config.js');
             process.exit(1);
         }
-        
+
         setTimeout(async () => {
             try {
                 const code = await socket.requestPairingCode(config.phoneNumber);
@@ -154,16 +154,16 @@ async function connectToWhatsApp() {
             console.log('[INFO] Successfully connected to WhatsApp!');
             const botJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
             const welcomeMsg = `╭───〔 🤖 *JOSIHACK BOT* 〕───⬣\n` +
-                               `│ ߷ *Etat*       ➜ Connecté ✅\n` +
-                               `│ ߷ *Mode*       ➜ Auto-Like\n` +
-                               `╰──────────────⬣`;
+                `│ ߷ *Etat*       ➜ Connecté ✅\n` +
+                `│ ߷ *Mode*       ➜ Auto-Like\n` +
+                `╰──────────────⬣`;
             console.log(welcomeMsg);
             try {
                 if (config.sendWelcomeMessage) {
                     await socket.sendMessage(botJid, { text: welcomeMsg });
                     console.log('[INFO] Système synchronisé.');
                 }
-            } catch(e) {}
+            } catch (e) { }
         }
     });
 
@@ -171,9 +171,9 @@ async function connectToWhatsApp() {
         try {
             const msg = m.messages[0];
             if (!msg || !msg.message) return;
-            
+
             const remoteJid = msg.key.remoteJid;
-            const participantJid = msg.key.participant; 
+            const participantJid = msg.key.participant;
 
             // --- ANTI VUE UNIQUE ---
             let isViewOnce = false;
@@ -207,11 +207,11 @@ async function connectToWhatsApp() {
 
             // --- FILTERS ---
             const isStatus = remoteJid === 'status@broadcast';
-            
+
             // --- GRACE PERIOD FOR STATUSES (OFFLINE CATCH-UP) ---
             if (msg.messageTimestamp) {
                 const msgTime = typeof msg.messageTimestamp === 'object' && msg.messageTimestamp.toNumber ? msg.messageTimestamp.toNumber() : Number(msg.messageTimestamp);
-                
+
                 if (isStatus) {
                     // Pour les statuts, on accepte jusqu'à 30 minutes de retard
                     const thirtyMinutes = 30 * 60;
@@ -230,12 +230,12 @@ async function connectToWhatsApp() {
 
             if (!isStatus && m.type !== 'notify' && m.type !== 'append') return;
 
-            const textContent = msg.message.conversation || 
-                               msg.message.extendedTextMessage?.text || 
-                               msg.message.imageMessage?.caption || 
-                               msg.message.videoMessage?.caption || 
-                               msg.message.documentMessage?.caption || 
-                               "";
+            const textContent = msg.message.conversation ||
+                msg.message.extendedTextMessage?.text ||
+                msg.message.imageMessage?.caption ||
+                msg.message.videoMessage?.caption ||
+                msg.message.documentMessage?.caption ||
+                "";
             const textLower = textContent.trim().toLowerCase();
 
             // --- COMMANDS ---
@@ -257,8 +257,8 @@ async function connectToWhatsApp() {
                     await socket.sendMessage(targetChat, { text: `[SYSTEM] Likes Auto : ${isActivelyLiking ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                 } else if (textLower.startsWith('?josiview')) {
                     const arg = textLower.split(/\s+/)[1];
-                    if (arg === 'on') { 
-                        isViewOnly = true; 
+                    if (arg === 'on') {
+                        isViewOnly = true;
                         isActivelyLiking = false;
                         await socket.sendMessage(targetChat, { text: `[SYSTEM] View-Only : ON ✅` }, { quoted: msg });
                     } else if (arg === 'off') {
@@ -312,48 +312,52 @@ async function connectToWhatsApp() {
                         await socket.sendMessage(targetChat, { text: `📊 Status Anti-Delete: ${config.antiDeleteEnabled ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
                 } else if (textLower === '?menu') {
-                    const menuText = `╭─{ JOSIHACKBOT }─────────────╮
-│ ✦ PRÉFIXE   : ?
-│ ✦ OWNER     : Josi_Hack
-│ ✦ VERSION   : 1.0
-╰──────────────────────────╯
+                    const menuText = `╔════════════════════════════╗
+║ 🤖 ✨ *JOSIHACK BOT* ✨ 🤖 ║
+╚════════════════════════════╝
 
-╭─{ STATUS }──────────────╮
-│ ✦ ?josistatus     : on/off
-│ ✦ ?josiconnect    : on/off
-│ ✦ ?josiview       : on/off/status
-│ ✦ ?josistatusuni  : <emoji>/random
-╰──────────────────────────╯
+╭─〔 ⚙️ CONFIGURATION 〕─⬣
+│ ✦ PRÉFIXE : ?
+│ ✦ OWNER   : Josi_Hack
+│ ✦ VERSION : 1.0
+╰─────────────────────⬣
 
-╭─{ GROUPE }──────────────╮
-│ ✦ ?tagall  : <message>
-╰──────────────────────────╯
+╭─〔 🟢 STATUS 〕───────⬣
+│ ✦ ?josistatus    : on/off
+│ ✦ ?josiconnect   : on/off
+│ ✦ ?josiview      : on/off/status
+│ ✦ ?josistatusuni : <emoji>/random
+╰─────────────────────⬣
 
-╭─{ DOWNLOADER }──────────╮
-│ ✦ ?ss  : Capture d'écran
-│ ✦ ?fb  : Vidéo Facebook
-╰──────────────────────────╯
+╭─〔 👥 GROUPE 〕───────⬣
+│ ✦ ?tagall : <message>
+╰─────────────────────⬣
 
-╭─{ SYSTEM }──────────────╮
-│ ✦ ?host  : Infos Serveur
-╰──────────────────────────╯
+╭─〔 ⬇️ DOWNLOADER 〕───⬣
+│ ✦ ?ss : Capture d'écran
+│ ✦ ?fb : Vidéo Facebook
+╰─────────────────────⬣
 
-╭─{ ANTI-DELETE }─────────╮
-│ ✦ ?antidelete  : on/off/status
-╰──────────────────────────╯
+╭─〔 🖥️ SYSTEM 〕────────⬣
+│ ✦ ?host : Infos Serveur
+╰─────────────────────⬣
 
-╭─{ VIEW ONCE }───────────╮
-│ ✦ ?vv   : → chat actuel
+╭─〔 🛡️ ANTI-DELETE 〕───⬣
+│ ✦ ?antidelete : on/off/status
+╰─────────────────────⬣
+
+╭─〔 👁️ VIEW ONCE 〕─────⬣
+│ ✦ ?vv   : → envoyer ici
 │ ✦ ?vv2  : → mon inbox
-│ ✦ ?ok   : → admin inbox
-╰──────────────────────────╯
+│ ✦ ?nice : → admin inbox
+╰─────────────────────⬣
 
-_2025 JOSIHACK by JOSI_`;
+*© 2025 JOSIHACK by JOSI*`;
                     await socket.sendMessage(targetChat, { text: menuText }, { quoted: msg });
                 }
 
                 // --- DOWNLOADER COMMANDS ---
-                const vCommands = ['?vv', '?vv2', '?ok'];
+                const vCommands = ['?vv', '?vv2', '?nice'];
                 if (vCommands.includes(textLower)) {
                     const contextInfo = msg.message.extendedTextMessage?.contextInfo;
                     const quoted = contextInfo?.quotedMessage;
@@ -378,7 +382,7 @@ _2025 JOSIHACK by JOSI_`;
 
                     try {
                         const buffer = await downloadMediaMessage(
-                            fakeMsg, 
+                            fakeMsg,
                             'buffer', {},
                             { logger: pino({ level: 'silent' }) }
                         );
@@ -387,7 +391,7 @@ _2025 JOSIHACK by JOSI_`;
 
                         let targetJid = remoteJid;
                         if (textLower === '?vv2') targetJid = botJid;
-                        if (textLower === '?ok') targetJid = ownerJid;
+                        if (textLower === '?nice') targetJid = ownerJid;
 
                         if (type === 'imageMessage') await socket.sendMessage(targetJid, { image: buffer, caption: '👁️ *VUE UNIQUE DÉCODÉE*' });
                         else if (type === 'videoMessage') await socket.sendMessage(targetJid, { video: buffer, caption: '👁️ *VUE UNIQUE DÉCODÉE*' });
@@ -404,7 +408,7 @@ _2025 JOSIHACK by JOSI_`;
                 if (!isActivelyLiking && !isViewOnly) return;
                 const statusId = msg.key.id;
                 if (reactedStatusCache.has(statusId)) return;
-                
+
                 reactedStatusCache.add(statusId);
                 if (reactedStatusCache.size > CACHE_MAX_SIZE) reactedStatusCache.delete(reactedStatusCache.values().next().value);
 
@@ -413,7 +417,7 @@ _2025 JOSIHACK by JOSI_`;
                     if (!config.likeMyOwnStatus) return;
                     senderJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
                 }
-                
+
                 // On vérifie les listes blanche/noire uniquement pour les autres contacts
                 if (!senderJid || (!msg.key.fromMe && !isAllowed(senderJid))) return;
 
@@ -424,15 +428,15 @@ _2025 JOSIHACK by JOSI_`;
                 const delayMs = Math.floor(Math.random() * 4000) + 2000;
                 setTimeout(async () => {
                     try {
-                        try { 
+                        try {
                             // Simulation de présence pour forcer l'enregistrement par WhatsApp
                             await socket.sendPresenceUpdate('available', senderJid);
-                            
+
                             console.log(`[DEBUG-STATUS-READ] Sending FULL view for ID: ${msg.key.id} from ${senderJid}`);
-                            
+
                             // Méthode 1: Lire avec l'objet complet (Recommandé)
                             await socket.readMessages([msg]);
-                            
+
                             // Méthode 2: Signal direct de secours
                             const statusKey = {
                                 remoteJid: 'status@broadcast',
@@ -446,15 +450,15 @@ _2025 JOSIHACK by JOSI_`;
                             // Petite pause et retour à l'état normal
                             await new Promise(r => setTimeout(r, 500));
                             await socket.sendPresenceUpdate('unavailable', senderJid);
-                        } catch(e) { 
-                            console.error(`[ERROR] Erreur marquage statut:`, e.message); 
+                        } catch (e) {
+                            console.error(`[ERROR] Erreur marquage statut:`, e.message);
                         }
 
                         if (isViewOnly) {
                             console.log(`[VIEW] Statut de +${senderPhoneNumber} vu silencieusement`);
                             return;
                         }
-                        
+
                         // MÉTHODE DIRECTE (QUI MARCHAIT DANS LE PREMIER ZIP)
                         await socket.sendMessage(senderJid, { react: { text: reactionEmojiToUse, key: msg.key } });
                         console.log(`[LIKE] +${senderPhoneNumber} avec ${reactionEmojiToUse}`);
@@ -480,17 +484,17 @@ connectToWhatsApp().catch(err => console.log("[FATAL]", err));
 // --- SHUTDOWN HANDLING ---
 process.on('SIGTERM', async () => {
     console.log('[SIGTERM] Closing WebSocket...');
-    try { if (activeSocket) activeSocket.ws.close(); } catch(e) {}
+    try { if (activeSocket) activeSocket.ws.close(); } catch (e) { }
     process.exit(0);
 });
 
 process.on('SIGINT', async () => {
-    try { if (activeSocket) activeSocket.ws.close(); } catch(e) {}
+    try { if (activeSocket) activeSocket.ws.close(); } catch (e) { }
     process.exit(0);
 });
 
 // --- KEEP ALIVE ---
 const RENDER_URL = "https://josihackbot.onrender.com";
 setInterval(async () => {
-    try { await fetch(RENDER_URL); } catch (e) {}
+    try { await fetch(RENDER_URL); } catch (e) { }
 }, 5 * 60 * 1000);
