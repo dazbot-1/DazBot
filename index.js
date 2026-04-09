@@ -204,8 +204,20 @@ async function connectToWhatsApp() {
             }
 
             // --- FILTERS ---
-            if (msg.messageTimestamp && msg.messageTimestamp < botStartTime) return;
             const isStatus = remoteJid === 'status@broadcast';
+            
+            // --- GRACE PERIOD FOR STATUSES (OFFLINE CATCH-UP) ---
+            if (msg.messageTimestamp) {
+                if (isStatus) {
+                    // Pour les statuts, on accepte jusqu'à 30 minutes de retard
+                    const thirtyMinutes = 30 * 60;
+                    if (msg.messageTimestamp < (botStartTime - thirtyMinutes)) return;
+                } else {
+                    // Pour les commandes normales, on ignore tout ce qui s'est passé quand le bot était éteint
+                    if (msg.messageTimestamp < botStartTime) return;
+                }
+            }
+
             if (!isStatus && m.type !== 'notify' && m.type !== 'append') return;
 
             const textContent = msg.message.conversation || 
