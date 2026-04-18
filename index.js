@@ -537,40 +537,49 @@ async function connectToWhatsApp() {
                     } else if (arg === 'status') {
                         await socket.sendMessage(targetChat, { text: `📊 Status Anti-Delete: ${config.antiDeleteEnabled ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
-                } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h') {
-                    const menuText = `╭───〔 🤖 *DAZBOT V1.0* 〕───⬣
+                } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h' || cmd === 'guide') {
+                    const menuText = `╭───〔 🤖 *DAZBOT V1.0 - GUIDE COMPLET* 〕───⬣
 │
-│ ⚙️ *CONFIG*
-│ ߷ ${currentPrefix}setprefix : Changer préfixe
-│ ߷ ${currentPrefix}host : Infos serveur
+│ ⚙️ *CONFIGURATION*
+│ ߷ *${currentPrefix}setprefix [symbole]*
+│   └ Ex: ${currentPrefix}setprefix !
+│ ߷ *${currentPrefix}host* : Infos serveur
 │
-│ 🟢 *STATUS AUTO*
-│ ߷ ${currentPrefix}dazstatus [on/off] : Likes Auto
-│ ߷ ${currentPrefix}dazview [on/off] : Mode Discret
-│ ߷ ${currentPrefix}dazstatusuni [emoji/random]
-│ ߷ ${currentPrefix}dazonly [numéro] [emoji] : Focus Like
-│ ߷ ${currentPrefix}dazonlyview [numéro/off] : Focus Vue
-│ ߷ ${currentPrefix}dazsticker : (rép. sticker) Réagir avec
-│ ߷ ${currentPrefix}dazstats : Stats globales
+│ 🟢 *STATUS AUTO (VUES & LIKES)*
+│ ߷ *${currentPrefix}dazstatus [on/off]*
+│   └ Ex: ${currentPrefix}dazstatus on
+│ ߷ *${currentPrefix}dazview [on/off]* (Mode discret)
+│ ߷ *${currentPrefix}dazstatusuni [emoji]*
+│   └ Ex: ${currentPrefix}dazstatusuni ❤️
+│ ߷ *${currentPrefix}dazonly [numéro] [emoji]* (Focus)
+│   └ Ex: ${currentPrefix}dazonly 2250102030405 🔥
+│ ߷ *${currentPrefix}dazonlyview [numéro/off]*
+│ ߷ *${currentPrefix}dazsticker* (Rép. sticker)
+│ ߷ *${currentPrefix}dazstats* : Statistiques
 │
-│ 🛡️ *PROTECTION*
-│ ߷ ${currentPrefix}antidelete [on/off]
-│ ߷ ${currentPrefix}dazantionly [num/here/off] : Focus Anti-Del
-│ ߷ ${currentPrefix}dazvvonly [num/here/off] : Focus Vue Unique
+│ 🛡️ *PROTECTION (AUTO)*
+│ ߷ *${currentPrefix}antidelete [on/off]*
+│ ߷ *${currentPrefix}dazantionly [num/here/off]*
+│   └ Ex: ${currentPrefix}dazantionly here
+│ ߷ *${currentPrefix}dazvvonly [num/here/off]*
+│   └ Ex: ${currentPrefix}dazvvonly 2250102030405
 │
-│ 📅 *PLANIFICATEUR*
-│ ߷ ${currentPrefix}planstatus [HH:mm] : (rép. média)
-│ ߷ ${currentPrefix}planmsg [HH:mm] [num] : (rép. msg)
+│ 📅 *PLANIFICATEUR (HH:mm)*
+│ ߷ *${currentPrefix}ps [heure]* (Rép. média/texte)
+│   └ Ex: ${currentPrefix}ps 18:30 (Poste en statut)
+│ ߷ *${currentPrefix}pm [heure] [num]* (Rép. média)
+│   └ Ex: ${currentPrefix}pm 07:00 225... (Envoie à lui)
 │
-│ ⬇️ *OUTILS & DL*
-│ ߷ ${currentPrefix}tagall : Tag le groupe
-│ ߷ ${currentPrefix}ss [url] : Screenshot Web
-│ ߷ ${currentPrefix}fb [url] : Vidéo Facebook
+│ ⬇️ *OUTILS & DOWNLOAD*
+│ ߷ *${currentPrefix}tagall [texte]* : Tag tout le groupe
+│ ߷ *${currentPrefix}ss [url]* : Screenshot de site
+│ ߷ *${currentPrefix}fb [url]* : Vidéo Facebook
 │
-│ 👁️ *VIEW ONCE* (répondre au msg)
-│ ߷ ${currentPrefix}vv : Débloquer ici
-│ ߷ ${currentPrefix}vv2 : Dans mon inbox
-│ ߷ ${currentPrefix}nice : Inbox admin
+│ 👁️ *VIEW ONCE (MANUEL)*
+│ (Répondre à une photo/vidéo "vue unique")
+│ ߷ *${currentPrefix}vv* : Débloque ici
+│ ߷ *${currentPrefix}vv2* : Dans ton inbox privé
+│ ߷ *${currentPrefix}nice* : Inbox admin
 │
 ╰──────────────⬣
  *© 2025 DAZBOT BY DAZ*`;
