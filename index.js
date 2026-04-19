@@ -21,10 +21,7 @@ const facebook = require('./facebook.js');
 const hostCmd = require('./host.js');
 const scheduler = require('./scheduler.js');
 
-console.log('[DEBUG] Bot starting...');
-
-// Setup memory cache to avoid performance/duplicate issues internally for Baileys
-const msgRetryCounterCache = new NodeCache();
+console.log('[DEBUG] Bot starting script execution...');
 
 // --- STATE & CACHE ---
 const reactedStatusCache = new Set();
@@ -33,9 +30,8 @@ const botStartTime = Math.floor(Date.now() / 1000);
 
 let isActivelyLiking = true;
 let fixedEmoji = null;
-let focusJid = null;
-let focusEmoji = null;
-let focusViewOnly = false;
+let focusTargets = new Map(); // Store JID -> { emoji: string }
+let focusViewOnly = false; // Legacy, will be removed or repurposed
 let focusVVJids = new Set();
 let reactionSticker = null;
 let isViewOnly = false;
@@ -50,47 +46,84 @@ const botStats = {
     byUser: {}
 };
 
+// Setup memory cache
+const msgRetryCounterCache = new NodeCache();
+
+console.log('[DEBUG] Constants and variables initialized.');
+
 // Helper to check if a number is allowed based on whitelist and blacklist
-function isAllowed(jid) {
-    if (focusJid) {
-        return jid.includes(focusJid);
+function isAllowed(jid, msg) {
+    if (!jid) return false;
+    
+    // Si c'est notre propre statut et que l'auto-like est activé, on autorise toujours
+    if (msg?.key?.fromMe && config.likeMyOwnStatus) return true;
+
+    const senderNum = jid.split('@')[0];
+    const participantPn = msg?.key?.participantPn || "";
+    const pnNum = participantPn.split('@')[0];
+
+    // On vérifie d'abord si la personne est dans le Focus (Priorité haute)
+    // On compare de manière floue pour supporter LID et PN
+    const isFocus = Array.from(focusTargets.keys()).some(target => 
+        jid.includes(target) || 
+        senderNum.includes(target) || 
+        participantPn.includes(target) || 
+        pnNum.includes(target) ||
+        target.includes(senderNum) ||
+        (pnNum && target.includes(pnNum))
+    );
+                         
+    if (isFocus) {
+        console.log(`[FILTER-FOCUS] Match trouvé pour un membre de la liste !`);
+        return true;
     }
+
+    // Si on a un focus actif mais que la personne n'est pas dedans, on n'autorise pas le Like (Sauf si Global Liking est ON)
+    if (focusTargets.size > 0 && !isActivelyLiking) {
+        return false;
+    }
+    
+    // Filtrage classique (Whitelist / Blacklist)
     if (config.blacklist && config.blacklist.length > 0) {
-        if (config.blacklist.includes(jid)) return false;
+        if (config.blacklist.some(b => jid.includes(b) || participantPn.includes(b) || senderNum === b.split('@')[0])) return false;
     }
+    
     if (config.whitelist && config.whitelist.length > 0) {
-        return config.whitelist.includes(jid);
+        return config.whitelist.some(w => jid.includes(w) || participantPn.includes(w) || senderNum === w.split('@')[0]);
     }
+    
     return true;
 }
 
 async function connectToWhatsApp() {
     console.log('[INFO] Chargement de la session WhatsApp locale...');
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+        const { version, isLatest } = await fetchLatestBaileysVersion();
+        console.log(`[INFO] Using WhatsApp v${version.join('.')}, isLatest: ${isLatest}`);
 
-    const { version, isLatest } = await fetchLatestBaileysVersion();
-    console.log(`[INFO] Using WhatsApp v${version.join('.')}, isLatest: ${isLatest}`);
+        const logger = pino({ level: 'info' });
 
-    const logger = pino({ level: 'info' });
+        const socket = makeWASocket({
+            version,
+            logger,
+            printQRInTerminal: true, // Force QR Code display even if pairing code is used
+            browser: ["Mac OS", "Chrome", "121.0.6167.85"],
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, logger)
+            },
+            msgRetryCounterCache,
+            generateHighQualityLinkPreview: true,
+            markOnlineOnConnect: false,
+            keepAliveIntervalMs: 30_000,
+            connectTimeoutMs: 60_000,
+            retryRequestDelayMs: 5000,
+            maxMsgRetryCount: 5
+        });
 
-    const socket = makeWASocket({
-        version,
-        logger,
-        printQRInTerminal: !config.usePairingCode,
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, logger)
-        },
-        msgRetryCounterCache,
-        generateHighQualityLinkPreview: true,
-        markOnlineOnConnect: false,
-        keepAliveIntervalMs: 25_000,
-        connectTimeoutMs: 120_000,
-        retryRequestDelayMs: 2000,
-        maxMsgRetryCount: 5
-    });
-
-    activeSocket = socket;
+        activeSocket = socket;
+        console.log('[DEBUG] Socket created.');
     
     // Configurer le callback pour les stats d'anti-delete
     antiDelete.setOnRecovered((phoneNumber) => {
@@ -107,14 +140,16 @@ async function connectToWhatsApp() {
 
         setTimeout(async () => {
             try {
-                const code = await socket.requestPairingCode(config.phoneNumber);
-                console.log(`\n========================================`);
-                console.log(`[ACTION REQUIRED] Your Pairing Code: ${code}`);
-                console.log(`========================================\n`);
+                if (!socket.authState.creds.me) {
+                    const code = await socket.requestPairingCode(config.phoneNumber);
+                    console.log(`\n========================================`);
+                    console.log(`[ACTION REQUIRED] Your Pairing Code: ${code}`);
+                    console.log(`========================================\n`);
+                }
             } catch (err) {
                 console.error('[ERROR] Failed to request pairing code:', err);
             }
-        }, 3000);
+        }, 5000);
     }
 
     socket.ev.on('creds.update', saveCreds);
@@ -133,7 +168,12 @@ async function connectToWhatsApp() {
     let reconnectAttempts = 0;
 
     socket.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            console.log(`\n[QR-CODE] Un nouveau QR Code est disponible. Scannez-le si vous ne voulez pas utiliser le Pairing Code.`);
+            // Note: Baileys printQRInTerminal handles the actual rendering if enabled
+        }
 
         if (connection === 'close') {
             const statusCode = (lastDisconnect?.error)?.output?.statusCode;
@@ -160,6 +200,13 @@ async function connectToWhatsApp() {
             reconnectAttempts = 0;
             console.log('[INFO] Successfully connected to WhatsApp!');
             scheduler.startScheduler(socket);
+
+            // Force presence for status to trigger key exchange
+            try {
+                await socket.sendPresenceUpdate('available');
+                await socket.sendPresenceUpdate('available', 'status@broadcast');
+            } catch (e) { }
+
             const botJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
             const welcomeMsg = `╭───〔 🤖 *DAZBOT* 〕───⬣\n` +
                 `│ ߷ *Etat*       ➜ Connecté ✅\n` +
@@ -177,11 +224,20 @@ async function connectToWhatsApp() {
 
     socket.ev.on('messages.upsert', async (m) => {
         try {
+            console.log(`[DEBUG-UPSERT] Nouveau pack de messages reçu (Type: ${m.type}, Count: ${m.messages?.length})`);
             const msg = m.messages[0];
             if (!msg || !msg.message) return;
 
             const remoteJid = msg.key.remoteJid;
             const participantJid = msg.key.participant;
+            const isStatus = remoteJid === 'status@broadcast';
+
+            if (isStatus) {
+                const sender = participantJid || msg.key.participant;
+                console.log(`[DEBUG-STATUS] Nouveau statut détecté de : ${sender} (ID: ${msg.key.id})`);
+            } else {
+                console.log(`[DEBUG-MSG] Message de ${remoteJid} (Type: ${m.type})`);
+            }
 
             // --- ANTI VUE UNIQUE ---
             let isViewOnce = false;
@@ -230,20 +286,17 @@ async function connectToWhatsApp() {
                 } catch (e) { console.error("[ERROR] Anti-View-Once failed"); }
             }
 
-            // --- FILTERS ---
-            const isStatus = remoteJid === 'status@broadcast';
-
             // --- GRACE PERIOD FOR STATUSES (OFFLINE CATCH-UP) ---
             if (msg.messageTimestamp) {
                 const msgTime = typeof msg.messageTimestamp === 'object' && msg.messageTimestamp.toNumber ? msg.messageTimestamp.toNumber() : Number(msg.messageTimestamp);
 
                 if (isStatus) {
-                    // Pour les statuts, on accepte jusqu'à 30 minutes de retard
-                    const thirtyMinutes = 30 * 60;
-                    if (msgTime < (botStartTime - thirtyMinutes)) {
+                    // Pour les statuts, on accepte jusqu'à 2 heures de retard au lieu de 30 min
+                    const gracePeriod = 2 * 60 * 60;
+                    if (msgTime < (botStartTime - gracePeriod)) {
+                        console.log(`[DEBUG-STATUS] Statut trop vieux ignoré : ${msg.key.id}`);
                         return;
                     }
-                    // Log silencieux pour le catch-up des statuts si nécessaire
                 } else {
                     // Pour les commandes normales, on ignore STRICTEMENT tout ce qui s'est passé quand le bot était éteint
                     if (msgTime < botStartTime) {
@@ -255,6 +308,14 @@ async function connectToWhatsApp() {
 
             if (!isStatus && m.type !== 'notify' && m.type !== 'append') return;
 
+            const senderJid = participantJid || remoteJid;
+            const isOwner = msg.key.fromMe || (config.owners && config.owners.some(o => o.length > 0 && senderJid.includes(o))) || (config.phoneNumber && senderJid.includes(config.phoneNumber));
+
+            if (!msg.message) {
+                console.log(`[DEBUG-MSG] Message reçu sans contenu décryptable de ${senderJid} (ID: ${msg.key.id})`);
+                return;
+            }
+
             const textContent = msg.message.conversation ||
                 msg.message.extendedTextMessage?.text ||
                 msg.message.imageMessage?.caption ||
@@ -264,16 +325,16 @@ async function connectToWhatsApp() {
             const textLower = textContent.trim().toLowerCase();
             const currentPrefix = config.prefix || "?";
             const isCmd = textLower.startsWith(currentPrefix);
-            const cmd = isCmd ? textLower.slice(currentPrefix.length).split(/\s+/)[0] : '';
+            const cmd = isCmd ? textLower.slice(currentPrefix.length).trim().split(/\s+/)[0] : '';
             const textArgs = isCmd ? textContent.slice(textContent.toLowerCase().indexOf(cmd) + cmd.length).trim() : '';
 
             // --- COMMANDS ---
-            const senderJid = participantJid || remoteJid;
-            const isOwner = msg.key.fromMe || (config.owners && config.owners.some(o => senderJid.includes(o)));
-
             if (isCmd) {
-                console.log(`[DEBUG] Command detected: "${textContent}" from ${senderJid} (isOwner: ${isOwner})`);
-                if (!isOwner) console.log(`[SECURITY] Command denied for ${senderJid}`);
+                console.log(`[DEBUG-CMD] Commande détectée: "${textContent}" de ${senderJid} (isOwner: ${isOwner})`);
+                if (!isOwner) {
+                    console.log(`[SECURITY] Commande refusée pour ${senderJid}`);
+                    return;
+                }
             }
 
             if (isOwner && isCmd) {
@@ -284,6 +345,8 @@ async function connectToWhatsApp() {
                     if (arg === 'on') { isActivelyLiking = true; isViewOnly = false; }
                     else if (arg === 'off') isActivelyLiking = false;
                     await socket.sendMessage(targetChat, { text: `[SYSTEM] Likes Auto : ${isActivelyLiking ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
+                } else if (cmd === 'ping') {
+                    await socket.sendMessage(targetChat, { text: 'Pong! 🏓 Bot is active.' }, { quoted: msg });
                 } else if (cmd === 'dazview') {
                     const arg = textLower.split(/\s+/)[1];
                     if (arg === 'on') {
@@ -301,48 +364,58 @@ async function connectToWhatsApp() {
                         await socket.sendMessage(targetChat, { text: `[SYSTEM] View-Only : ${isViewOnly ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
                 } else if (cmd === 'dazreset') {
-                    focusJid = null;
-                    focusEmoji = null;
+                    focusTargets.clear();
+                    isActivelyLiking = true;
+                    isViewOnly = false;
+                    fixedEmoji = null;
                     focusViewOnly = false;
                     focusVVJids.clear();
                     antiDelete.clearFocus();
-                    await socket.sendMessage(targetChat, { text: `🧹 *RÉINITIALISATION COMPLÈTE*\n\n- Focus Status : Désactivé\n- Focus Anti-Delete : Vidé\n- Focus Vue Unique : Vidé\n\nLe bot réagit à nouveau à tout le monde.` }, { quoted: msg });
+                    await socket.sendMessage(targetChat, { text: `🧹 *RÉINITIALISATION COMPLÈTE*\n\n- Focus Status : Vidé\n- Auto-Like : ON ✅\n- Vision Seule : OFF ❌\n- Anti-Delete : Reset\n\nLe bot est revenu à sa configuration d'origine.` }, { quoted: msg });
                 } else if (cmd === 'dazstatusuni') {
-                    const arg = textLower.split(/\s+/)[1];
+                    const arg = textContent.trim().split(/\s+/)[1];
                     if (!arg) {
                         const status = fixedEmoji ? `Fixé sur ${fixedEmoji}` : "Aléatoire 🎲";
-                        await socket.sendMessage(targetChat, { text: `📊 *MODE UNI-EMOJI*\n\nEtat actuel : ${status}\n\nUsage:\n- ${currentPrefix}dazstatusuni ❤️ (Fixe l'emoji)\n- ${currentPrefix}dazstatusuni random (Mode aléatoire)` }, { quoted: msg });
-                    } else if (arg === 'random') {
+                        await socket.sendMessage(targetChat, { text: `📊 *MODE UNI-EMOJI*\n\nEtat actuel : ${status}\n\nUsage:\n- ${currentPrefix}dazstatusuni ❤️ (Fixe l'emoji global)\n- ${currentPrefix}dazstatusuni random (Mode aléatoire)` }, { quoted: msg });
+                    } else if (arg.toLowerCase() === 'random') {
                         fixedEmoji = null;
-                        await socket.sendMessage(targetChat, { text: `✅ Mode Aléatoire 🎲 (Emojis du config.js)` }, { quoted: msg });
+                        await socket.sendMessage(targetChat, { text: `✅ Mode Aléatoire 🎲` }, { quoted: msg });
                     } else {
-                        fixedEmoji = arg; // Use arg directly to avoid issues with textContent
+                        fixedEmoji = arg;
                         isActivelyLiking = true; 
                         isViewOnly = false;
-                        await socket.sendMessage(targetChat, { text: `✅ Mode Uni-Emoji activé !\nL'emoji ${fixedEmoji} sera utilisé pour tous les likes.` }, { quoted: msg });
+                        await socket.sendMessage(targetChat, { text: `✅ Emoji global fixé : ${fixedEmoji}` }, { quoted: msg });
                     }
                 } else if (cmd === 'dazonly') {
-                    const arg = textLower.split(/\s+/)[1];
-                    const emojiArg = textLower.split(/\s+/)[2];
-                    if (!arg) {
-                        await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro ou 'off'.\nExemple: ${currentPrefix}dazonly 225... ❤️` }, { quoted: msg });
-                    } else if (arg === 'off') {
-                        focusJid = null;
-                        focusEmoji = null;
-                        focusViewOnly = false;
-                        await socket.sendMessage(targetChat, { text: `✅ Mode focus désactivé.` }, { quoted: msg });
-                    } else {
-                        const cleanNumber = arg.replace(/\D/g, '');
+                    const action = textLower.split(/\s+/)[1];
+                    const target = textLower.split(/\s+/)[2];
+                    const emoji = textContent.trim().split(/\s+/)[3];
+
+                    if (!action || action === 'list') {
+                        const list = Array.from(focusTargets.entries()).map(([jid, data]) => `• ${jid} (${data.emoji || "Auto"})`).join('\n') || "Aucun";
+                        return await socket.sendMessage(targetChat, { text: `🎯 *LISTE FOCUS STATUS*\n\nUsage:\n- ${currentPrefix}dazonly add [num] [emoji]\n- ${currentPrefix}dazonly remove [num]\n- ${currentPrefix}dazonly off\n\nCibles actuelles:\n${list}` }, { quoted: msg });
+                    }
+
+                    if (action === 'off') {
+                        focusTargets.clear();
+                        await socket.sendMessage(targetChat, { text: `✅ Tous les focus ont été retirés.` }, { quoted: msg });
+                    } else if (action === 'add') {
+                        if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro.` }, { quoted: msg });
+                        const cleanNumber = target.replace(/\D/g, '');
                         if (cleanNumber.length >= 8) {
-                            focusJid = cleanNumber;
-                            focusEmoji = emojiArg || null;
-                            focusViewOnly = false;
-                            isActivelyLiking = true;
-                            isViewOnly = false;
-                            const emojiMsg = focusEmoji ? ` avec l'emoji ${focusEmoji}` : " avec emojis aléatoires";
-                            await socket.sendMessage(targetChat, { text: `🎯 Mode Focus activé !\nLe bot réagira désormais UNIQUEMENT aux statuts de : +${cleanNumber}${emojiMsg}` }, { quoted: msg });
+                            focusTargets.set(cleanNumber, { emoji: emoji || null });
+                            await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté au focus (Emoji: ${emoji || "Auto"}).` }, { quoted: msg });
                         } else {
                             await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
+                        }
+                    } else if (action === 'remove') {
+                        if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro.` }, { quoted: msg });
+                        const cleanNumber = target.replace(/\D/g, '');
+                        if (focusTargets.has(cleanNumber)) {
+                            focusTargets.delete(cleanNumber);
+                            await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} retiré du focus.` }, { quoted: msg });
+                        } else {
+                            await socket.sendMessage(targetChat, { text: `❌ Ce numéro n'est pas dans la liste.` }, { quoted: msg });
                         }
                     }
                 } else if (cmd === 'dazonlyview') {
@@ -562,41 +635,31 @@ async function connectToWhatsApp() {
 │ ߷ *${currentPrefix}dazreset* : Reset TOUS les focus
 │ ߷ *${currentPrefix}host* : Infos serveur
 │
-│ 🟢 *STATUS AUTO (VUES & LIKES)*
+│ 🎯 *FOCUS STATUS (LIKE CIBLÉ)*
+│ ߷ *${currentPrefix}dazonly add [num] [emoji]*
+│   └ Ex: ${currentPrefix}dazonly add 225... 🔥
+│ ߷ *${currentPrefix}dazonly remove [num]*
+│ ߷ *${currentPrefix}dazonly list* (Voir ta liste)
+│ ߷ *${currentPrefix}dazonly off* (Vider la liste)
+│
+│ 🟢 *GLOBAL STATUS (TOUT LE MONDE)*
 │ ߷ *${currentPrefix}dazstatus [on/off]*
-│   └ Ex: ${currentPrefix}dazstatus on
-│ ߷ *${currentPrefix}dazview [on/off]* (Mode discret)
-│ ߷ *${currentPrefix}dazstatusuni [emoji]*
-│   └ Ex: ${currentPrefix}dazstatusuni ❤️
-│ ߷ *${currentPrefix}dazonly [numéro] [emoji]* (Focus)
-│   └ Ex: ${currentPrefix}dazonly 2250102030405 🔥
-│ ߷ *${currentPrefix}dazonlyview [numéro/off]*
+│   └ ON : Like tout le monde
+│   └ OFF : Like UNIQUEMENT ton Focus
+│ ߷ *${currentPrefix}dazview [on/off]*
+│   └ ON : Vision seule (Pas de like même focus)
+│ ߷ *${currentPrefix}dazstatusuni [emoji/random]*
 │ ߷ *${currentPrefix}dazsticker* (Rép. sticker)
 │ ߷ *${currentPrefix}dazstats* : Statistiques
 │
 │ 🛡️ *PROTECTION (AUTO)*
 │ ߷ *${currentPrefix}antidelete [on/off]*
 │ ߷ *${currentPrefix}dazantionly [add/remove/list/off]*
-│   └ Ex: ${currentPrefix}dazantionly add here
 │ ߷ *${currentPrefix}dazvvonly [add/remove/list/off]*
-│   └ Ex: ${currentPrefix}dazvvonly add 225...
 │
 │ 📅 *PLANIFICATEUR (HH:mm)*
 │ ߷ *${currentPrefix}ps [heure]* (Rép. média/texte)
-│   └ Ex: ${currentPrefix}ps 18:30 (Poste en statut)
 │ ߷ *${currentPrefix}pm [heure] [num]* (Rép. média)
-│   └ Ex: ${currentPrefix}pm 07:00 225... (Envoie à lui)
-│
-│ ⬇️ *OUTILS & DOWNLOAD*
-│ ߷ *${currentPrefix}tagall [texte]* : Tag tout le groupe
-│ ߷ *${currentPrefix}ss [url]* : Screenshot de site
-│ ߷ *${currentPrefix}fb [url]* : Vidéo Facebook
-│
-│ 👁️ *VIEW ONCE (MANUEL)*
-│ (Répondre à une photo/vidéo "vue unique")
-│ ߷ *${currentPrefix}vv* : Débloque ici
-│ ߷ *${currentPrefix}vv2* : Dans ton inbox privé
-│ ߷ *${currentPrefix}nice* : Inbox admin
 │
 ╰──────────────⬣
  *© 2025 DAZBOT BY DAZ*`;
@@ -658,13 +721,14 @@ async function connectToWhatsApp() {
                 reactedStatusCache.add(statusId);
                 if (reactedStatusCache.size > CACHE_MAX_SIZE) reactedStatusCache.delete(reactedStatusCache.values().next().value);
 
-                let senderJid = participantJid || msg.key.participant;
-                if (msg.key.fromMe) {
-                    if (!config.likeMyOwnStatus) return;
-                    senderJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
+                const senderJid = participantJid || msg.key.participant;
+                if (!senderJid) {
+                    console.log(`[DEBUG-STATUS] Impossible de déterminer l'expéditeur pour ${msg.key.id}`);
+                    return;
                 }
 
-                const senderPhoneNumber = senderJid.split('@')[0];
+                // Récupération du vrai numéro si disponible
+                const senderPhoneNumber = (msg.key.participantPn || senderJid).split('@')[0];
                 const emojis = config.reactionEmojis || ["❤️"];
                 const reactionEmojiToUse = fixedEmoji ? fixedEmoji : emojis[Math.floor(Math.random() * emojis.length)];
 
@@ -677,55 +741,86 @@ async function connectToWhatsApp() {
 
                             console.log(`[STATUS-READ] +${senderPhoneNumber} (${msg.key.id})`);
 
-                            // Méthode 1: Lire avec l'objet complet (Recommandé)
-                            await socket.readMessages([msg]);
+                            // Marquer comme lu
+                            await socket.readMessages([msg.key]);
+                            
+                            // Signal de secours (Receipt)
+                            await socket.sendReceipt('status@broadcast', senderJid, [msg.key.id], 'read');
+
                             botStats.statusRead++;
                             botStats.byUser[senderPhoneNumber] = (botStats.byUser[senderPhoneNumber] || 0) + 1;
 
-                            // Méthode 2: Signal direct de secours
-                            const statusKey = {
-                                remoteJid: 'status@broadcast',
-                                id: msg.key.id,
-                                participant: senderJid
-                            };
-                            if (typeof socket.sendReceipt === 'function') {
-                                await socket.sendReceipt(statusKey.remoteJid, statusKey.participant, [statusKey.id], 'read');
-                            }
-
-                            // Petite pause et retour à l'état normal
-                            await new Promise(r => setTimeout(r, 500));
+                            // Petite pause pour laisser le temps au serveur WhatsApp d'enregistrer la lecture
+                            await new Promise(r => setTimeout(r, 2000));
                             await socket.sendPresenceUpdate('unavailable', senderJid);
                         } catch (e) {
                             console.error(`[ERROR] Erreur marquage statut:`, e.message);
                         }
 
                         // On ne continue que si au moins un des deux modes est actif
-                        if (!isActivelyLiking && !isViewOnly) return;
+                        if (!isActivelyLiking && !isViewOnly) {
+                            console.log(`[STATUS-INFO] +${senderPhoneNumber} : Lu uniquement (Liking: ${isActivelyLiking}, ViewOnly: ${isViewOnly})`);
+                            return;
+                        }
+
+                        // Check if we are in focusViewOnly mode for THIS sender
+                        const isThisSenderFocus = focusJid && senderJid.includes(focusJid);
+                        
+                        if (focusViewOnly && isThisSenderFocus) {
+                            console.log(`[VIEW] Statut de +${senderPhoneNumber} vu silencieusement (Mode Focus Vision)`);
+                            return;
+                        }
 
                         // Check if allowed to like (Moved here to ensure we ALWAYS read, but only LIKE if allowed)
-                        if (!msg.key.fromMe && !isAllowed(senderJid)) {
-                            console.log(`[STATUS-INFO] +${senderPhoneNumber} : Lu uniquement (Pas en focus/whitelist)`);
+                        if (!msg.key.fromMe && !isAllowed(senderJid, msg)) {
+                            // console.log(`[STATUS-INFO] +${senderPhoneNumber} : Lu uniquement (Pas en focus/whitelist)`);
                             return;
                         }
 
-                        if (isViewOnly || (focusJid && focusViewOnly)) {
-                            console.log(`[VIEW] Statut de +${senderPhoneNumber} vu silencieusement`);
+                        // On détermine l'emoji à utiliser
+                        let emojiToUse = reactionEmojiToUse;
+                        
+                        // Si l'utilisateur est dans le focus, on prend son emoji spécifique
+                        const focusData = focusTargets.get(senderJid) || 
+                                          focusTargets.get(senderPhoneNumber) || 
+                                          (msg.key.participantPn ? focusTargets.get(msg.key.participantPn.split('@')[0]) : null);
+                        
+                        if (focusData) {
+                            // PRIORITÉ 1 : FOCUS (On like toujours, sauf si le bot est totalement éteint)
+                            if (focusData.emoji) emojiToUse = focusData.emoji;
+                            else if (fixedEmoji) emojiToUse = fixedEmoji;
+
+                            console.log(`[DEBUG-LIKE] Envoi réaction focus à status@broadcast pour ${senderPhoneNumber}`);
+                            await socket.sendMessage('status@broadcast', { 
+                                react: { text: emojiToUse, key: msg.key } 
+                            }, { backgroundColor: '#310731' }); // Optionnel mais aide parfois
+                            
+                            botStats.statusReacted++;
+                            console.log(`[FOCUS-LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
                             return;
                         }
 
-                        if (!isActivelyLiking) return;
-
-                        // MÉTHODE DIRECTE (QUI MARCHAIT DANS LE PREMIER ZIP)
-                        if (reactionSticker) {
-                            await socket.sendMessage(senderJid, { sticker: reactionSticker, key: msg.key });
-                            botStats.statusReacted++;
-                            console.log(`[STICKER-LIKE] +${senderPhoneNumber} avec un sticker`);
-                        } else {
-                            const emojiToUse = (focusJid && focusEmoji) ? focusEmoji : reactionEmojiToUse;
-                            await socket.sendMessage(senderJid, { react: { text: emojiToUse, key: msg.key } });
-                            botStats.statusReacted++;
-                            console.log(`[LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
+                        // PRIORITÉ 2 : VISION SEULE GLOBALE
+                        if (isViewOnly) {
+                            console.log(`[VIEW] Statut de +${senderPhoneNumber} vu silencieusement (Mode Global Vision)`);
+                            return;
                         }
+
+                        // PRIORITÉ 3 : LIKE GLOBAL
+                        if (!isActivelyLiking) {
+                            console.log(`[STATUS-INFO] +${senderPhoneNumber} : Lu uniquement (Global Like OFF)`);
+                            return;
+                        }
+
+                        if (fixedEmoji) emojiToUse = fixedEmoji;
+
+                        console.log(`[DEBUG-LIKE] Envoi réaction globale à status@broadcast pour ${senderPhoneNumber}`);
+                        await socket.sendMessage('status@broadcast', { 
+                            react: { text: emojiToUse, key: msg.key } 
+                        });
+                        
+                        botStats.statusReacted++;
+                        console.log(`[LIKE] +${senderPhoneNumber} avec ${emojiToUse}`);
 
                         if (config.autoReplyMessage?.trim()) {
                             await socket.sendMessage(senderJid, { text: config.autoReplyMessage });
@@ -735,6 +830,9 @@ async function connectToWhatsApp() {
             }
         } catch (error) { console.error('[ERROR] Upsert loop:', error.message); }
     });
+    } catch (err) {
+        console.error('[FATAL] Connection error:', err);
+    }
 }
 
 // --- EXPRESS SERVER ---

@@ -29,8 +29,12 @@ module.exports = {
 
     // Provide your phone number if using pairing code (e.g., "1234567890")
     // Include the country code but no '+' sign or spaces.
-    phoneNumber: "22955724800",
+    phoneNumber: "22947726871",
     
+    // Supabase credentials for remote auth state storage 
+    supabaseUrl: "", 
+    supabaseKey: "", 
+
     // Anti-Delete settings
     antiDeleteEnabled: true,
     antiDeleteChat: "", // Default destination for deleted messages
