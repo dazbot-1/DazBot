@@ -63,7 +63,16 @@ async function tryStatusReact(socket, msg, emoji) {
     const meJid = socket.user?.id;
     const meLid = socket.user?.lid;
     const participant = msg.key.participant;
-    const participantPn = msg.key.participantPn;
+    // Baileys v7 ne peuple pas toujours msg.key.participantPn pour les statuts ;
+    // si besoin on résout le LID → PN via le LIDMappingStore.
+    let participantPn = msg.key.participantPn;
+    if (!participantPn && participant && participant.endsWith('@lid')) {
+        try {
+            participantPn = await socket.signalRepository?.lidMapping?.getPNForLID?.(participant);
+        } catch (e) {
+            console.log(`[REACT-LID-RESOLVE-FAIL] ${participant}: ${e.message}`);
+        }
+    }
 
     // Étape 1 : réaction sur le broadcast status.
     // On essaie plusieurs combinaisons de statusJidList pour couvrir PN et LID.
@@ -92,8 +101,17 @@ async function tryStatusReact(socket, msg, emoji) {
     // On vise le vrai numéro téléphonique du poster (participantPn), avec fallback LID.
     // Uniquement si l'étape 1 a réussi — sinon on risque d'envoyer un doublon orphelin
     // qui n'est rattaché à aucune réaction broadcast et qui pollue le chat privé du poster.
+    // On exclut aussi le chat privé avec soi-même (likeMyOwnStatus), sinon chaque auto-like
+    // génère une notif "tu as réagi à ton propre statut" dans son propre chat.
     const posterJid = participantPn || participant;
-    if (broadcastOk && posterJid && !posterJid.endsWith('@broadcast')) {
+    const normalize = (j) => (j ? j.split('@')[0].split(':')[0] : '');
+    const isSelf = posterJid && (
+        posterJid === meJid ||
+        posterJid === meLid ||
+        normalize(posterJid) === normalize(meJid) ||
+        normalize(posterJid) === normalize(meLid)
+    );
+    if (broadcastOk && posterJid && !posterJid.endsWith('@broadcast') && !isSelf) {
         try {
             await socket.sendMessage(
                 posterJid,
@@ -827,8 +845,22 @@ async function connectToWhatsApp() {
                     return;
                 }
 
-                // Récupération du vrai numéro si disponible
-                const senderPhoneNumber = (msg.key.participantPn || senderJid).split('@')[0];
+                // Récupération du vrai numéro de téléphone.
+                // msg.key.participantPn n'est pas toujours peuplé par Baileys v7 pour les statuts :
+                // le statut arrive avec un identifiant interne @lid (ex: 161358163222743@lid)
+                // qui n'a aucune relation mathématique avec le numéro réel (ex: 22955724800).
+                // Sans résolution LID→PN, les lookups dazonly/dazdiscrete comparent "161358163222743"
+                // à "22955724800" → jamais de match → jamais de like.
+                // On interroge donc le LIDMappingStore de Baileys pour récupérer le PN.
+                let resolvedPnJid = msg.key.participantPn;
+                if (!resolvedPnJid && senderJid.endsWith('@lid')) {
+                    try {
+                        resolvedPnJid = await socket.signalRepository?.lidMapping?.getPNForLID?.(senderJid);
+                    } catch (e) {
+                        console.log(`[LID-MAPPING-FAIL] ${senderJid}: ${e.message}`);
+                    }
+                }
+                const senderPhoneNumber = (resolvedPnJid || senderJid).split('@')[0].split(':')[0];
                 const emojis = config.reactionEmojis || ["❤️"];
                 const reactionEmojiToUse = fixedEmoji ? fixedEmoji : emojis[Math.floor(Math.random() * emojis.length)];
 
