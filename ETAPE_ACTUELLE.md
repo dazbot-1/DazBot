@@ -34,4 +34,4 @@
 - Continuer les améliorations de fonctionnalités demandées par l'utilisateur.
 
 ---
-*Document généré par l'Assistant DazBot.*
+*Mais ça marrche pas pour le moment donc à revoir .*
