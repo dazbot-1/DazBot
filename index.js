@@ -53,20 +53,36 @@ const msgRetryCounterCache = new NodeCache();
 
 console.log('[DEBUG] Constants and variables initialized.');
 
-// Réagit à un statut WhatsApp. Le serveur renvoie "not-acceptable" si
-// le statusJidList contient un JID en format @lid (adressage Baileys interne).
-// La seule combinaison qui passe chez WhatsApp est : [participantPn, meJid]
-// (numéro téléphonique du posteur + notre propre JID).
-// On garde un fallback vers le @lid au cas où participantPn serait absent.
+// Réagit à un statut WhatsApp.
+// Stratégie double-envoi pour que la réaction apparaisse vraiment sur le téléphone du poster :
+//   1. sendMessage('status@broadcast', ...) avec statusJidList → réaction visible dans le flux "Statuts"
+//   2. sendMessage(posterJid, ...) direct dans le chat privé du poster → déclenche la notif "a réagi à votre statut"
+// Sans l'étape 2, WhatsApp reçoit la réaction côté serveur mais ne l'affiche pas sur le mobile du poster
+// parce qu'il attend la notification privée qui n'a jamais été envoyée.
 async function tryStatusReact(socket, msg, emoji) {
     const meJid = socket.user?.id;
+    const meLid = socket.user?.lid;
     const participant = msg.key.participant;
-    const participantPn = msg.key.participantPn;
+    // Baileys v7 ne peuple pas toujours msg.key.participantPn pour les statuts ;
+    // si besoin on résout le LID → PN via le LIDMappingStore.
+    let participantPn = msg.key.participantPn;
+    if (!participantPn && participant && participant.endsWith('@lid')) {
+        try {
+            participantPn = await socket.signalRepository?.lidMapping?.getPNForLID?.(participant);
+        } catch (e) {
+            console.log(`[REACT-LID-RESOLVE-FAIL] ${participant}: ${e.message}`);
+        }
+    }
 
+    // Étape 1 : réaction sur le broadcast status.
+    // On essaie plusieurs combinaisons de statusJidList pour couvrir PN et LID.
     const candidates = [];
     if (participantPn && meJid) candidates.push([participantPn, meJid]);
     if (participant && meJid && participant !== participantPn) candidates.push([participant, meJid]);
+    if (participantPn && meLid && meLid !== meJid) candidates.push([participantPn, meLid]);
+    if (participant && meLid && meLid !== meJid && participant !== participantPn) candidates.push([participant, meLid]);
 
+    let broadcastOk = false;
     for (const list of candidates) {
         try {
             await socket.sendMessage(
@@ -74,12 +90,40 @@ async function tryStatusReact(socket, msg, emoji) {
                 { react: { text: emoji, key: msg.key } },
                 { statusJidList: list }
             );
-            return true;
+            broadcastOk = true;
+            break;
         } catch (e) {
             console.log(`[REACT-RETRY] ${e.message} (list=${JSON.stringify(list)})`);
         }
     }
-    return false;
+
+    // Étape 2 : doublon en chat privé pour déclencher la notif mobile.
+    // On vise le vrai numéro téléphonique du poster (participantPn), avec fallback LID.
+    // Uniquement si l'étape 1 a réussi — sinon on risque d'envoyer un doublon orphelin
+    // qui n'est rattaché à aucune réaction broadcast et qui pollue le chat privé du poster.
+    // On exclut aussi le chat privé avec soi-même (likeMyOwnStatus), sinon chaque auto-like
+    // génère une notif "tu as réagi à ton propre statut" dans son propre chat.
+    const posterJid = participantPn || participant;
+    const normalize = (j) => (j ? j.split('@')[0].split(':')[0] : '');
+    const isSelf = posterJid && (
+        posterJid === meJid ||
+        posterJid === meLid ||
+        normalize(posterJid) === normalize(meJid) ||
+        normalize(posterJid) === normalize(meLid)
+    );
+    if (broadcastOk && posterJid && !posterJid.endsWith('@broadcast') && !isSelf) {
+        try {
+            await socket.sendMessage(
+                posterJid,
+                { react: { text: emoji, key: msg.key } }
+            );
+            console.log(`[REACT-PRIVATE] Doublon envoyé à ${posterJid}`);
+        } catch (e) {
+            console.log(`[REACT-PRIVATE-FAIL] ${posterJid}: ${e.message}`);
+        }
+    }
+
+    return broadcastOk;
 }
 
 // Helper to check if a number is allowed based on whitelist and blacklist
@@ -428,8 +472,13 @@ async function connectToWhatsApp() {
                         if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro.` }, { quoted: msg });
                         const cleanNumber = target.replace(/\D/g, '');
                         if (cleanNumber.length >= 8) {
+                            // Mutuellement exclusif avec dazonly : un numéro ne peut pas être
+                            // à la fois en focus-like et en vision-seule, sinon le discrete
+                            // gagne toujours (priorité) et le like programmé ne part jamais.
+                            const wasInFocus = focusTargets.delete(cleanNumber);
                             discreteTargets.add(cleanNumber);
-                            await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté à la liste discrète (Vision seule uniquement).` }, { quoted: msg });
+                            const suffix = wasInFocus ? `\n(Retiré automatiquement de la liste focus.)` : '';
+                            await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté à la liste discrète (Vision seule uniquement).${suffix}` }, { quoted: msg });
                         } else {
                             await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
                         }
@@ -474,8 +523,12 @@ async function connectToWhatsApp() {
                         if (!target) return await socket.sendMessage(targetChat, { text: `❌ Spécifiez un numéro.` }, { quoted: msg });
                         const cleanNumber = target.replace(/\D/g, '');
                         if (cleanNumber.length >= 8) {
+                            // Mutuellement exclusif avec dazdiscrete : sinon le numéro
+                            // est ignoré par la logique de like car discrete a priorité.
+                            const wasInDiscrete = discreteTargets.delete(cleanNumber);
                             focusTargets.set(cleanNumber, { emoji: emoji || null });
-                            await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté au focus (Emoji: ${emoji || "Auto"}).` }, { quoted: msg });
+                            const suffix = wasInDiscrete ? `\n(Retiré automatiquement de la liste discrète.)` : '';
+                            await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté au focus (Emoji: ${emoji || "Auto"}).${suffix}` }, { quoted: msg });
                         } else {
                             await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
                         }
@@ -801,8 +854,22 @@ async function connectToWhatsApp() {
                     return;
                 }
 
-                // Récupération du vrai numéro si disponible
-                const senderPhoneNumber = (msg.key.participantPn || senderJid).split('@')[0];
+                // Récupération du vrai numéro de téléphone.
+                // msg.key.participantPn n'est pas toujours peuplé par Baileys v7 pour les statuts :
+                // le statut arrive avec un identifiant interne @lid (ex: 161358163222743@lid)
+                // qui n'a aucune relation mathématique avec le numéro réel (ex: 22955724800).
+                // Sans résolution LID→PN, les lookups dazonly/dazdiscrete comparent "161358163222743"
+                // à "22955724800" → jamais de match → jamais de like.
+                // On interroge donc le LIDMappingStore de Baileys pour récupérer le PN.
+                let resolvedPnJid = msg.key.participantPn;
+                if (!resolvedPnJid && senderJid.endsWith('@lid')) {
+                    try {
+                        resolvedPnJid = await socket.signalRepository?.lidMapping?.getPNForLID?.(senderJid);
+                    } catch (e) {
+                        console.log(`[LID-MAPPING-FAIL] ${senderJid}: ${e.message}`);
+                    }
+                }
+                const senderPhoneNumber = (resolvedPnJid || senderJid).split('@')[0].split(':')[0];
                 const emojis = config.reactionEmojis || ["❤️"];
                 const reactionEmojiToUse = fixedEmoji ? fixedEmoji : emojis[Math.floor(Math.random() * emojis.length)];
 
@@ -815,8 +882,12 @@ async function connectToWhatsApp() {
 
                             console.log(`[STATUS-READ] +${senderPhoneNumber} (${msg.key.id})`);
 
-                            // 2. Envoyer le signal de lecture sur les deux canaux (Broadcast + Privé)
-                            await socket.sendReceipt('status@broadcast', senderJid, [msg.key.id], 'read');
+                            // 2. Envoyer le signal de lecture "read".
+                            // Le participant du receipt doit être le JID téléphonique résolu (pas le LID),
+                            // sinon WhatsApp accepte le receipt côté serveur mais ne propage pas le "vu"
+                            // au client mobile du poster. Même logique que pour les réactions.
+                            const receiptParticipant = resolvedPnJid || senderJid;
+                            await socket.sendReceipt('status@broadcast', receiptParticipant, [msg.key.id], 'read');
                             await socket.readMessages([msg.key]);
 
                             botStats.statusRead++;
