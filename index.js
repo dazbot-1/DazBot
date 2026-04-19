@@ -90,8 +90,10 @@ async function tryStatusReact(socket, msg, emoji) {
 
     // Étape 2 : doublon en chat privé pour déclencher la notif mobile.
     // On vise le vrai numéro téléphonique du poster (participantPn), avec fallback LID.
+    // Uniquement si l'étape 1 a réussi — sinon on risque d'envoyer un doublon orphelin
+    // qui n'est rattaché à aucune réaction broadcast et qui pollue le chat privé du poster.
     const posterJid = participantPn || participant;
-    if (posterJid && !posterJid.endsWith('@broadcast')) {
+    if (broadcastOk && posterJid && !posterJid.endsWith('@broadcast')) {
         try {
             await socket.sendMessage(
                 posterJid,
