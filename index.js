@@ -873,8 +873,12 @@ async function connectToWhatsApp() {
 
                             console.log(`[STATUS-READ] +${senderPhoneNumber} (${msg.key.id})`);
 
-                            // 2. Envoyer le signal de lecture sur les deux canaux (Broadcast + Privé)
-                            await socket.sendReceipt('status@broadcast', senderJid, [msg.key.id], 'read');
+                            // 2. Envoyer le signal de lecture "read".
+                            // Le participant du receipt doit être le JID téléphonique résolu (pas le LID),
+                            // sinon WhatsApp accepte le receipt côté serveur mais ne propage pas le "vu"
+                            // au client mobile du poster. Même logique que pour les réactions.
+                            const receiptParticipant = resolvedPnJid || senderJid;
+                            await socket.sendReceipt('status@broadcast', receiptParticipant, [msg.key.id], 'read');
                             await socket.readMessages([msg.key]);
 
                             botStats.statusRead++;
