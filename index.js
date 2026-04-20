@@ -233,6 +233,35 @@ async function connectToWhatsApp() {
 
     socket.ev.on('creds.update', saveCreds);
 
+    // --- SEED DE CONTACTS DEPUIS LES SESSIONS SIGNAL ---
+    // syncFullHistory est activé mais WhatsApp ne renvoie pas forcément
+    // d'events contacts.upsert immédiatement après reconnexion. On regarde
+    // donc le dossier auth_info_baileys pour extraire les JIDs des contacts
+    // avec qui on a déjà une session Signal : ce sont nos vrais contacts,
+    // connus de WhatsApp, et ils constituent un statusJidList valide.
+    try {
+        const fs = require('fs');
+        const path = require('path');
+        const authDir = path.resolve(__dirname, 'auth_info_baileys');
+        const files = fs.readdirSync(authDir);
+        let seeded = 0;
+        for (const f of files) {
+            const m = f.match(/^session-(\d+)_\d+\.\d+\.json$/);
+            if (!m) continue;
+            const id = m[1];
+            // Ces identifiants sont des LIDs côté Baileys v7. Les contacts
+            // qui acceptent les statuts via LID sont acceptés par le serveur.
+            const jid = `${id}@lid`;
+            if (!knownContactsJidList.has(jid)) {
+                knownContactsJidList.add(jid);
+                seeded++;
+            }
+        }
+        console.log(`[CONTACTS-SEED] ${seeded} contact(s) détectés via les sessions Signal locales.`);
+    } catch (e) {
+        console.log('[CONTACTS-SEED] Echec lecture sessions:', e.message);
+    }
+
     // --- TRACKER DE CONTACTS ---
     // Baileys ne remplit pas automatiquement la liste des destinataires quand on
     // poste un statut : sans `statusJidList`, le statut est uploadé mais invisible
