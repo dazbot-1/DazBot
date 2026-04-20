@@ -89,5 +89,10 @@ module.exports = {
     // Si non vide, le bot ne répond IA qu'à ces numéros (sans '+', ex "22955724800")
     aiAllowedNumbers: [],
     // Numéros à IGNORER même si autoReply est ON.
-    aiBlockedNumbers: []
+    aiBlockedNumbers: [],
+    // Numéros traités en MODE ROMANTIQUE ("copines") : le bot utilise la
+    // personnalité `romantic` de personality.json (mots doux, ton affectueux,
+    // réassurance sur l'exclusivité) au lieu de la personnalité Daziano standard.
+    // Ex : ['22955724800', '22912345678']
+    aiRomanticNumbers: []
 };

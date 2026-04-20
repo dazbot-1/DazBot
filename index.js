@@ -128,7 +128,7 @@ if (aiService) {
 // l'owner à la fin — même comportement qu'avant, en un peu plus verbeux côté
 // logs. Mieux vaut ça que rater un switch gratuit.
 const AI_FALLBACK_STATUSES = new Set([400, 401, 402, 403, 404, 408, 409, 413, 422, 429, 500, 502, 503, 504]);
-async function aiGenerateWithFallback(conversationId, text) {
+async function aiGenerateWithFallback(conversationId, text, opts = {}) {
     if (!aiChain.length) throw new Error('Aucun provider IA disponible.');
     let lastErr = null;
     for (let i = 0; i < aiChain.length; i++) {
@@ -136,7 +136,7 @@ async function aiGenerateWithFallback(conversationId, text) {
         const svc = initProvider(providerName);
         if (!svc) continue;
         try {
-            const reply = await svc.generateReply(conversationId, text);
+            const reply = await svc.generateReply(conversationId, text, { mode: opts.mode || 'default' });
             if (i > 0) {
                 console.log(`[AI] Fallback réussi : ${aiChain[0]} → ${providerName}.`);
             }
@@ -1398,13 +1398,21 @@ async function connectToWhatsApp() {
                                 }
                             }
                         }
-                    } else if (arg === 'allow' || arg === 'block') {
-                        // ?dazai allow add|remove|list|clear [numéro]
-                        // ?dazai block add|remove|list|clear [numéro]
-                        // Si `allow` est non vide, le bot ne répond IA qu'à ces numéros.
-                        // `block` bloque un numéro même si `allow` le permet.
-                        const listKey = arg === 'allow' ? 'aiAllowedNumbers' : 'aiBlockedNumbers';
-                        const label = arg === 'allow' ? 'whitelist IA' : 'blacklist IA';
+                    } else if (arg === 'allow' || arg === 'block' || arg === 'romantic' || arg === 'copine' || arg === 'copines') {
+                        // ?dazai allow   add|remove|list|clear [numéro]  → whitelist IA
+                        // ?dazai block   add|remove|list|clear [numéro]  → blacklist IA
+                        // ?dazai romantic add|remove|list|clear [numéro] → copines (mode romantique)
+                        const normArg = (arg === 'copine' || arg === 'copines') ? 'romantic' : arg;
+                        const listKey = normArg === 'allow'
+                            ? 'aiAllowedNumbers'
+                            : normArg === 'block'
+                                ? 'aiBlockedNumbers'
+                                : 'aiRomanticNumbers';
+                        const label = normArg === 'allow'
+                            ? 'whitelist IA'
+                            : normArg === 'block'
+                                ? 'blacklist IA'
+                                : 'copines (mode romantique)';
                         const sub = (textLower.split(/\s+/)[2] || '').trim();
                         const num = (textArgs.split(/\s+/)[2] || '').replace(/[^\d]/g, '');
                         if (!Array.isArray(config[listKey])) config[listKey] = [];
@@ -1421,10 +1429,12 @@ async function connectToWhatsApp() {
                             await socket.sendMessage(targetChat, { text: `🧹 ${label} vidée.` }, { quoted: msg });
                         } else {
                             // list par défaut
-                            const hint = arg === 'allow'
+                            const hint = normArg === 'allow'
                                 ? `_Si vide, le bot répond à *tous* les contacts. Sinon il ne répond qu'à ceux listés._`
-                                : `_Les contacts listés ne reçoivent jamais de réponse IA, même s'ils sont dans la whitelist._`;
-                            await socket.sendMessage(targetChat, { text: `🤖 *${label}* (${list.length})\n${list.length ? list.map(n => '• +' + n).join('\n') : '_(vide)_'}\n\n${hint}\n\n*Usage*\n- ${currentPrefix}dazai ${arg} add <numéro>\n- ${currentPrefix}dazai ${arg} remove <numéro>\n- ${currentPrefix}dazai ${arg} clear` }, { quoted: msg });
+                                : normArg === 'block'
+                                    ? `_Les contacts listés ne reçoivent jamais de réponse IA, même s'ils sont dans la whitelist._`
+                                    : `_Les contacts listés déclenchent la personnalité ROMANTIQUE (mots doux : bébé / mon cœur / ma belle / chérie / bb). Les autres gardent le Daziano standard._`;
+                            await socket.sendMessage(targetChat, { text: `🤖 *${label}* (${list.length})\n${list.length ? list.map(n => '• +' + n).join('\n') : '_(vide)_'}\n\n${hint}\n\n*Usage*\n- ${currentPrefix}dazai ${normArg} add <numéro>\n- ${currentPrefix}dazai ${normArg} remove <numéro>\n- ${currentPrefix}dazai ${normArg} clear` }, { quoted: msg });
                         }
                     } else {
                         const providerInfo = aiService
@@ -1433,7 +1443,9 @@ async function connectToWhatsApp() {
                         const chainInfo = aiChain.length ? aiChain.join(' → ') : '(vide)';
                         const allowList = (config.aiAllowedNumbers || []).map(n => '+' + n).join(', ') || '(tous)';
                         const blockList = (config.aiBlockedNumbers || []).map(n => '+' + n).join(', ') || '(aucun)';
-                        await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA DazBot*\n\n- Service : ${providerInfo}\n- Fallback auto : ${chainInfo}\n- Auto-reply : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n- Whitelist : ${allowList}\n- Blacklist : ${blockList}\n\n*Commandes*\n- ${currentPrefix}dazai on / off\n- ${currentPrefix}dazai stats\n- ${currentPrefix}dazai contacts        _(liste les contacts actifs)_\n- ${currentPrefix}dazai clear           (cette conversation)\n- ${currentPrefix}dazai clear all       (toutes)\n- ${currentPrefix}dazai model <nom>\n- ${currentPrefix}dazai provider [nom]  _(gemini/groq/cerebras/openrouter/openai)_\n- ${currentPrefix}dazai chain <p1 p2..|reset>   _(ordre de fallback)_\n- ${currentPrefix}dazai reload           (recharge personality.json)\n- ${currentPrefix}dazai allow add/remove/list/clear <numéro>   _(restreindre à certains contacts)_\n- ${currentPrefix}dazai block add/remove/list/clear <numéro>   _(ignorer certains contacts)_` }, { quoted: msg });
+                        const romList = (config.aiRomanticNumbers || []);
+                        const romInfo = romList.length ? `${romList.length} contact${romList.length > 1 ? 's' : ''} (${romList.map(n => '+' + n).join(', ')})` : '(aucune)';
+                        await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA DazBot*\n\n- Service : ${providerInfo}\n- Fallback auto : ${chainInfo}\n- Auto-reply : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n- Whitelist : ${allowList}\n- Blacklist : ${blockList}\n- 💕 Copines : ${romInfo}\n\n*Commandes*\n- ${currentPrefix}dazai on / off\n- ${currentPrefix}dazai stats\n- ${currentPrefix}dazai contacts        _(liste les contacts actifs)_\n- ${currentPrefix}dazai clear           (cette conversation)\n- ${currentPrefix}dazai clear all       (toutes)\n- ${currentPrefix}dazai model <nom>\n- ${currentPrefix}dazai provider [nom]  _(gemini/groq/cerebras/openrouter/openai)_\n- ${currentPrefix}dazai chain <p1 p2..|reset>   _(ordre de fallback)_\n- ${currentPrefix}dazai reload           (recharge personality.json)\n- ${currentPrefix}dazai allow add/remove/list/clear <numéro>   _(restreindre à certains contacts)_\n- ${currentPrefix}dazai block add/remove/list/clear <numéro>   _(ignorer certains contacts)_\n- ${currentPrefix}dazai romantic add/remove/list/clear <numéro> _(copine : mots doux)_` }, { quoted: msg });
                     }
                 } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h' || cmd === 'guide') {
                     const p = currentPrefix;
@@ -1590,8 +1602,12 @@ _© 2025 · DAZBOT by DAZ_`;
 
                     const allowed = (config.aiAllowedNumbers || []).map(String);
                     const blocked = (config.aiBlockedNumbers || []).map(String);
+                    const romantic = (config.aiRomanticNumbers || []).map(String);
                     const blockedHit = blocked.includes(senderNumber);
                     const allowedHit = allowed.length === 0 || allowed.includes(senderNumber);
+                    // Mode personnalité : 'romantic' si le numéro est dans la liste
+                    // des copines, sinon 'default' (Daziano standard).
+                    const personalityMode = romantic.includes(senderNumber) ? 'romantic' : 'default';
 
                     // Scope historique : en groupe on garde un thread par (groupe+participant)
                     // pour que deux contacts dans le même groupe ne partagent pas le contexte.
@@ -1612,12 +1628,13 @@ _© 2025 · DAZBOT by DAZ_`;
                                 const delayMs = Math.round(clamped * factor);
                                 await new Promise((r) => setTimeout(r, delayMs));
 
-                                const { reply, provider: usedProvider } = await aiGenerateWithFallback(conversationId, textContent.trim());
+                                const { reply, provider: usedProvider } = await aiGenerateWithFallback(conversationId, textContent.trim(), { mode: personalityMode });
                                 try { await socket.sendPresenceUpdate('paused', remoteJid); } catch (_) {}
                                 if (reply) {
                                     await socket.sendMessage(remoteJid, { text: reply }, { quoted: msg });
                                     const via = usedProvider !== aiChain[0] ? ` [via ${usedProvider}]` : '';
-                                    console.log(`[AI] +${senderNumber}${via} → "${reply.slice(0, 60)}${reply.length > 60 ? '…' : ''}"`);
+                                    const modeTag = personalityMode === 'romantic' ? ' 💕' : '';
+                                    console.log(`[AI] +${senderNumber}${modeTag}${via} → "${reply.slice(0, 60)}${reply.length > 60 ? '…' : ''}"`);
                                 }
                             } catch (e) {
                                 // Toujours couper le "composing" même en cas d'erreur API,

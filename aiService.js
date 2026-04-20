@@ -21,18 +21,34 @@ const axios = require('axios');
 
 const PERSONALITY_PATH = path.resolve(__dirname, 'personality.json');
 
+// Charge personality.json et retourne un objet avec les différents modes
+// de personnalité supportés. `default` = Daziano standard, `romantic` =
+// mode copine (mots doux, ton affectueux). On accepte aussi l'ancienne
+// forme ({ personality: {...} }) pour rétro-compatibilité : elle est
+// mappée sur `default`.
 function loadPersonality() {
+    const empty = { systemPrompt: '', description: '', examples: [] };
     try {
         const raw = fs.readFileSync(PERSONALITY_PATH, 'utf8');
         const parsed = JSON.parse(raw);
-        const p = parsed.personality || parsed || {};
-        return {
-            systemPrompt: p.systemPrompt || '',
-            description: p.description || '',
-            examples: Array.isArray(p.examples) ? p.examples : [],
-        };
+        const pickMode = (src) => ({
+            systemPrompt: src?.systemPrompt || '',
+            description: src?.description || '',
+            examples: Array.isArray(src?.examples) ? src.examples : [],
+        });
+        // Forme v2 : { personalities: { default: {...}, romantic: {...} } }
+        if (parsed.personalities && typeof parsed.personalities === 'object') {
+            const out = {};
+            for (const [k, v] of Object.entries(parsed.personalities)) out[k] = pickMode(v);
+            if (!out.default) out.default = { ...empty };
+            return out;
+        }
+        // Forme v1 (rétro-compat) : { personality: {...}, romantic: {...}? }
+        const modes = { default: pickMode(parsed.personality || parsed) };
+        if (parsed.romantic) modes.romantic = pickMode(parsed.romantic);
+        return modes;
     } catch (e) {
-        return { systemPrompt: '', description: '', examples: [] };
+        return { default: { ...empty } };
     }
 }
 
@@ -119,8 +135,14 @@ class AIService {
         this.personality = loadPersonality();
     }
 
-    _buildSystemMessages() {
-        const { systemPrompt, description, examples } = this.personality;
+    // `mode` : 'default' (Daziano standard) ou 'romantic' (copine, mots doux).
+    // Fallback automatique sur 'default' si un mode demandé n'est pas défini
+    // dans personality.json — comme ça un personality.json simple qui ne
+    // contient que la section standard ne casse rien.
+    _buildSystemMessages(mode) {
+        const requested = mode && this.personality[mode] ? mode : 'default';
+        const p = this.personality[requested] || { systemPrompt: '', description: '', examples: [] };
+        const { systemPrompt, description, examples } = p;
         const exampleLines = (examples || []).map(
             (ex) => `Utilisateur: "${ex.user}" → Toi: "${ex.assistant}"`,
         );
@@ -144,7 +166,12 @@ class AIService {
         return 'gpt-4o-mini';
     }
 
-    async generateReply(conversationId, incomingMessage) {
+    // opts.mode : personnalité à utiliser ('default' | 'romantic'). Par défaut
+    // 'default'. Le mode n'influence que le prompt système ; l'historique
+    // conversationnel reste partagé, donc si tu changes un contact de mode,
+    // le nouveau ton prend effet tout de suite sans perdre le contexte.
+    async generateReply(conversationId, incomingMessage, opts = {}) {
+        const mode = opts.mode || 'default';
         const maxContextMessages = Number(this.config.aiMaxContextMessages || 10);
 
         // Copie défensive : on ne mute pas l'historique stocké tant que l'appel
@@ -158,7 +185,7 @@ class AIService {
         const maxEntries = maxContextMessages * 2;
         if (history.length > maxEntries) history = history.slice(-maxEntries);
 
-        const messages = [...this._buildSystemMessages(), ...history];
+        const messages = [...this._buildSystemMessages(mode), ...history];
 
         const url = `${this.baseURL}/chat/completions`;
         const body = {
