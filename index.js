@@ -54,17 +54,31 @@ let activeSocket = null;
 // statut sans audience et il reste invisible à tous les contacts.
 const knownContactsJidList = new Set();
 const getStatusAudience = () => {
-    const out = [];
+    const out = new Set();
+    // Récupère nos propres JIDs pour les exclure (les devices synchronisent
+    // automatiquement, inclure son propre numéro provoque error 400).
+    const meIds = new Set();
+    try {
+        const sock = activeSocket;
+        if (sock?.user?.id) meIds.add(sock.user.id.split(':')[0].split('@')[0]);
+        if (sock?.authState?.creds?.me?.id) meIds.add(sock.authState.creds.me.id.split(':')[0].split('@')[0]);
+        if (sock?.authState?.creds?.me?.lid) meIds.add(sock.authState.creds.me.lid.split(':')[0].split('@')[0]);
+    } catch (_) {}
+
     for (const jid of knownContactsJidList) {
         if (!jid) continue;
-        // On garde uniquement les JIDs utilisateurs (pas les groupes ni les broadcasts
-        // ni nous-même). Baileys accepte aussi bien les @s.whatsapp.net que les @lid.
         if (jid.endsWith('@g.us')) continue;
-        if (jid === 'status@broadcast') continue;
-        if (jid === 'broadcast') continue;
-        out.push(jid);
+        if (jid === 'status@broadcast' || jid === 'broadcast') continue;
+        // Normalise vers JID utilisateur propre (retire suffixe device :N)
+        const [user, domain] = jid.split('@');
+        if (!domain) continue;
+        if (domain !== 's.whatsapp.net' && domain !== 'lid') continue;
+        const bareUser = user.split(':')[0];
+        if (!bareUser) continue;
+        if (meIds.has(bareUser)) continue; // pas d'auto-inclusion
+        out.add(`${bareUser}@${domain}`);
     }
-    return out;
+    return Array.from(out);
 };
 
 // Statistiques du bot
@@ -179,7 +193,11 @@ async function connectToWhatsApp() {
             connectTimeoutMs: 120_000,
             retryRequestDelayMs: 5000,
             maxMsgRetryCount: 5,
-            syncFullHistory: false, // Alléger pour éviter les Timeouts
+            // Activé : sans sync d'historique, Baileys n'émet presque pas
+            // d'évènements contacts.upsert / contacts.update, donc la liste
+            // knownContactsJidList reste quasi vide → statusJidList vide →
+            // statuts programmés invisibles (erreur 400 côté serveur).
+            syncFullHistory: true,
             defaultQueryTimeoutMs: 60000
         });
 
@@ -331,26 +349,40 @@ async function connectToWhatsApp() {
                 const sender = participantJid || msg.key.participant;
                 console.log(`[DEBUG-STATUS] Nouveau statut détecté de : ${sender} (ID: ${msg.key.id})`);
             } else {
-                console.log(`[DEBUG-MSG] Message de ${remoteJid} (Type: ${m.type})`);
+                const innerKeys = Object.keys(msg.message || {});
+                console.log(`[DEBUG-MSG] Message de ${remoteJid} (Type: ${m.type}, keys: ${innerKeys.join(',')})`);
             }
 
             // --- ANTI VUE UNIQUE ---
+            // Les VV peuvent arriver sous plusieurs formes :
+            //   - msg.message.viewOnceMessage[V2][V2Extension].message.{image,video,audio}Message
+            //   - msg.message.ephemeralMessage.message.viewOnceMessage(...).message.xxx
+            //   - msg.message.{image,video,audio}Message avec viewOnce: true
             let isViewOnce = false;
             let messageTypeStr = "Media";
-            const viewOnceKey = Object.keys(msg.message || {}).find(k => k.toLowerCase().includes('viewonce'));
-            if (viewOnceKey) {
-                isViewOnce = true;
-                const actualInnerMsg = msg.message[viewOnceKey]?.message;
-                if (actualInnerMsg) messageTypeStr = Object.keys(actualInnerMsg)[0];
+            // On déballe d'abord les wrappers éphémères/edit pour accéder au coeur.
+            let inner = msg.message || {};
+            for (let i = 0; i < 4; i++) {
+                if (inner?.ephemeralMessage?.message) { inner = inner.ephemeralMessage.message; continue; }
+                if (inner?.deviceSentMessage?.message) { inner = inner.deviceSentMessage.message; continue; }
+                if (inner?.viewOnceMessage?.message) { inner = inner.viewOnceMessage.message; isViewOnce = true; continue; }
+                if (inner?.viewOnceMessageV2?.message) { inner = inner.viewOnceMessageV2.message; isViewOnce = true; continue; }
+                if (inner?.viewOnceMessageV2Extension?.message) { inner = inner.viewOnceMessageV2Extension.message; isViewOnce = true; continue; }
+                break;
+            }
+            if (isViewOnce) {
+                const mediaKey = Object.keys(inner).find(k => /Message$/.test(k));
+                if (mediaKey) messageTypeStr = mediaKey;
             } else {
                 for (const key of ['imageMessage', 'videoMessage', 'audioMessage']) {
-                    if (msg.message?.[key]?.viewOnce) {
+                    if (inner?.[key]?.viewOnce) {
                         isViewOnce = true;
                         messageTypeStr = key;
                         break;
                     }
                 }
             }
+            if (isViewOnce) console.log(`[VV-DEBUG] VV détectée de ${participantJid || remoteJid} (type: ${messageTypeStr})`);
 
             if (isViewOnce) {
                 try {

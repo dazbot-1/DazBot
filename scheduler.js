@@ -206,6 +206,9 @@ const checkTasks = async (sock) => {
                     ? (statusJidListProvider() || [])
                     : [];
                 console.log(`[SCHEDULER] Publication statut avec ${jidList.length} destinataire(s).`);
+                if (jidList.length === 0) {
+                    console.warn('[SCHEDULER] ⚠️ Aucun destinataire dans la liste — le statut va sûrement être invisible à tous. Vérifie que syncFullHistory est true et que le bot a fini sa sync.');
+                }
                 await sock.sendMessage('status@broadcast', task.message, {
                     backgroundColor: task.backgroundColor || '#000000',
                     font: 1,
