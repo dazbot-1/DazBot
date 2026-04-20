@@ -204,6 +204,23 @@ class AIService {
         }
     }
 
+    // Supprime toutes les entrées d'historique dont la clé commence par le
+    // préfixe donné. Utile pour les groupes : l'historique y est stocké sous
+    // `${groupJid}:${participantJid}` — un simple `clearHistory(groupJid)` ne
+    // matcherait aucune clé. `clearHistoryByPrefix(groupJid + ':')` (ou juste
+    // `groupJid`) efface tous les threads du groupe d'un coup.
+    clearHistoryByPrefix(prefix) {
+        if (!prefix) return 0;
+        let count = 0;
+        for (const key of this.history.keys()) {
+            if (key === prefix || key.startsWith(prefix + ':')) {
+                this.history.delete(key);
+                count++;
+            }
+        }
+        return count;
+    }
+
     getStats() {
         const totalMessages = Array.from(this.history.values()).reduce(
             (acc, h) => acc + h.length,

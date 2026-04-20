@@ -1164,10 +1164,21 @@ async function connectToWhatsApp() {
                             if (aiService) aiService.clearHistory();
                             await socket.sendMessage(targetChat, { text: `🧹 Historique IA vidé (tous les contacts).` }, { quoted: msg });
                         } else {
-                            // L'historique IA est clé par remoteJid (chat distant),
-                            // pas par targetChat (= self-JID pour les commandes owner).
-                            if (aiService) aiService.clearHistory(remoteJid);
-                            await socket.sendMessage(targetChat, { text: `🧹 Historique IA vidé pour cette conversation.` }, { quoted: msg });
+                            // L'historique IA est clé par remoteJid pour les
+                            // chats privés, mais par `${remoteJid}:${participantJid}`
+                            // dans les groupes — un simple delete(remoteJid) ne
+                            // matcherait rien. Donc : groupes → clearHistoryByPrefix,
+                            // privés → clearHistory direct.
+                            let cleared = 0;
+                            if (aiService) {
+                                if (remoteJid.endsWith('@g.us')) {
+                                    cleared = aiService.clearHistoryByPrefix(remoteJid);
+                                } else {
+                                    cleared = aiService.history.has(remoteJid) ? 1 : 0;
+                                    aiService.clearHistory(remoteJid);
+                                }
+                            }
+                            await socket.sendMessage(targetChat, { text: `🧹 Historique IA vidé pour cette conversation (${cleared} thread${cleared === 1 ? '' : 's'}).` }, { quoted: msg });
                         }
                     } else if (arg === 'stats') {
                         if (!aiService) {
