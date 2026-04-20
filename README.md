@@ -57,6 +57,29 @@ Programme l'envoi de messages **privés** à l'heure et la date voulues. Survit 
 
 Tout est paramétrable dans `config.js` via `bootBannerUrl`, `bootQuotes`, `ownerName`, `ownerNumber` (voir [Configuration](#configuration)).
 
+### 🤖 Chatbot IA (porté depuis [Chat-Bot-Dazi](https://github.com/dazbot-1/Chat-Bot-Dazi))
+Répond **automatiquement** aux messages privés texte en imitant ta personnalité via **Gemini** (Google AI Studio, plan gratuit), **OpenRouter** ou **OpenAI**. Le bot tient un historique court par contact (10 derniers échanges), affiche un indicateur "composing", attend un délai réaliste (~40ms/char ±15%) puis envoie la réponse. En cas d'erreur API (crédits épuisés, clé invalide, etc.) l'owner reçoit une notification explicite dans sa DM.
+
+- Désactivé par défaut : active avec `?dazai on`
+- Personnalité = prompt système + description + 48 exemples de style dans `personality.json` (modifiable, rechargeable à chaud avec `?dazai reload`)
+- Jamais de réponse sur : status, commandes, messages envoyés par toi-même
+- Filtres : `aiAllowedNumbers` (whitelist) et `aiBlockedNumbers` (blacklist) dans `config.js`
+- Groupes : désactivé par défaut (`aiRespondToGroups: false`)
+
+Commandes :
+- `?dazai` — état courant
+- `?dazai on` / `?dazai off` — toggle
+- `?dazai stats` — conversations/messages en mémoire, provider, modèle
+- `?dazai clear` — reset historique de la conversation courante
+- `?dazai clear all` — reset historique de tous les contacts
+- `?dazai model <nom>` — change le modèle à chaud (ex: `openai/gpt-4o-mini`, `anthropic/claude-3.5-sonnet`)
+- `?dazai reload` — recharge `personality.json` sans redémarrer
+
+**Clé API** : mets l'une des trois clés suivantes dans un fichier `.env` à la racine du repo selon le provider choisi dans `config.aiProvider` :
+- **Gemini** (défaut, gratuit) : `GEMINI_API_KEY=AIza...` → création sur https://aistudio.google.com/apikey (aucune carte requise, plan gratuit suffit)
+- **OpenRouter** : `OPENROUTER_API_KEY=sk-or-...` → https://openrouter.ai/keys (créditer au moins 1$ sur https://openrouter.ai/settings/credits)
+- **OpenAI** : `OPENAI_API_KEY=sk-...` → https://platform.openai.com/api-keys
+
 ### 👁️ Autre
 - `?dazsticker` (réponse à un sticker) — téléchargement
 - `?dazstats` — statistiques globales + TOP 5 des contacts
@@ -108,8 +131,34 @@ module.exports = {
 
     // Anti-Delete
     antiDeleteEnabled: true,
-    antiDeleteChat: ""                 // vide = DM perso (recommandé)
+    antiDeleteChat: "",                // vide = DM perso (recommandé)
+
+    // Chatbot IA (facultatif, nécessite une clé dans .env)
+    aiAutoReply: false,                // active avec ?dazai on
+    aiProvider: "gemini",              // "gemini" | "openrouter" | "openai"
+    aiModel: "gemini-2.5-flash",       // ex. "gemini-2.5-pro", "openai/gpt-4o-mini", "gpt-4o-mini"...
+    aiMaxContextMessages: 10,
+    aiRespondToGroups: false,
+    aiTypingDelayMsMin: 1000,
+    aiTypingDelayMsMax: 4000,
+    aiAllowedNumbers: [],              // vide = tous les contacts privés
+    aiBlockedNumbers: []
 };
+```
+
+**Variables d'environnement** (fichier `.env` à la racine, déjà dans `.gitignore`) :
+
+```
+# Par défaut (gratuit) : Google AI Studio
+GEMINI_API_KEY=AIza...
+
+# Ou OpenRouter (payant) :
+# OPENROUTER_API_KEY=sk-or-v1-...
+
+# Ou OpenAI direct (payant) :
+# OPENAI_API_KEY=sk-...
+# OPENAI_PROJECT_ID=proj_...
+# OPENAI_ORG_ID=org-...
 ```
 
 **Options clés du message de connexion :**
@@ -157,6 +206,8 @@ Préfixe par défaut : `?` (modifiable via `?setprefix !`).
 | `?dazreset` | Reset tous les focus |
 | `?dazstats` | Statistiques du bot |
 | `?setprefix <symbole>` | Changer le préfixe de commandes |
+| `?dazai on/off` | Active/coupe le chatbot IA (auto-réponse aux DM) |
+| `?dazai stats` / `clear [all]` / `model <nom>` / `reload` | Gestion du chatbot IA |
 | `?menu` / `?help` | Menu complet |
 
 **Format numéro :** indicatif pays + numéro sans `+` ni espaces (ex : `22955724800`).

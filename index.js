@@ -7,6 +7,11 @@ try {
     if (_cfg.timezone) process.env.TZ = _cfg.timezone;
 } catch (_) {}
 
+// Charge les variables d'env depuis un .env local (pour OPENROUTER_API_KEY /
+// OPENAI_API_KEY utilisés par aiService). Sans .env le bot continue, mais le
+// chatbot IA sera simplement désactivé.
+try { require('dotenv').config(); } catch (_) {}
+
 console.log('---------------------------------------');
 console.log('[SYSTEM] DAZBOT INITIALISATION...');
 console.log('---------------------------------------');
@@ -32,8 +37,157 @@ const screenshot = require('./screenshot.js');
 const facebook = require('./facebook.js');
 const hostCmd = require('./host.js');
 const scheduler = require('./scheduler.js');
+const AIService = require('./aiService.js');
 
 console.log('[DEBUG] Bot starting script execution...');
+
+// Chatbot IA (porté depuis dazbot-1/Chat-Bot-Dazi). Initialisé à la demande
+// seulement si une clé est présente, pour que l'absence de clé n'empêche pas
+// le bot de démarrer. L'auto-réponse elle-même reste gouvernée par le toggle
+// `config.aiAutoReply` (default : false).
+// Nom de la variable d'env attendue pour le provider actuellement configuré.
+// Utilisé pour les messages d'init / de statut / d'erreur côté DM owner.
+function envKeyForProvider(providerName) {
+    switch ((providerName || '').toLowerCase()) {
+        case 'openai': return 'OPENAI_API_KEY';
+        case 'openrouter': return 'OPENROUTER_API_KEY';
+        case 'groq': return 'GROQ_API_KEY';
+        case 'cerebras': return 'CEREBRAS_API_KEY';
+        default: return 'GEMINI_API_KEY'; // gemini par défaut
+    }
+}
+
+const SUPPORTED_PROVIDERS = ['gemini', 'groq', 'cerebras', 'openrouter', 'openai'];
+
+// --- AI POOL + AUTO-FALLBACK ---
+// Historique conversationnel partagé entre tous les providers : quand on
+// bascule de gemini → groq → cerebras pour un même message, le nouveau
+// provider voit le même contexte que l'ancien (sinon on perdrait le fil).
+const aiSharedHistory = new Map();
+
+// Pool de providers initialisés (provider name → AIService). On instancie
+// paresseusement : seulement les providers dont la clé est dans .env.
+const aiPool = new Map();
+
+function initProvider(providerName) {
+    const name = (providerName || '').toLowerCase();
+    if (aiPool.has(name)) return aiPool.get(name);
+    try {
+        // Primaire : on respecte config.aiModel (sinon le modèle choisi par
+        // l'utilisateur via config.js ou ?dazai model serait ignoré). Fallback :
+        // on passe aiModel vide → chaque provider utilise son propre défaut
+        // (gemini-2.5-flash-lite pour Gemini, llama-3.3-70b-versatile pour Groq,
+        // llama3.1-8b pour Cerebras, etc.). Un `config.aiModel` gemini-spécifique
+        // n'a aucun sens pour Groq/Cerebras qui utilisent des namespaces Llama.
+        const isPrimary = name === (config.aiProvider || '').toLowerCase();
+        const svc = new AIService(
+            { ...config, aiProvider: name, aiModel: isPrimary ? (config.aiModel || '') : '' },
+            { sharedHistory: aiSharedHistory },
+        );
+        aiPool.set(name, svc);
+        return svc;
+    } catch (e) {
+        return null;
+    }
+}
+
+// `aiService` = provider primaire (utilisé pour ?dazai stats / clear /
+// affichage courant). Reste pointé sur config.aiProvider par défaut.
+let aiService = initProvider(config.aiProvider);
+
+// `aiChain` = ordre d'essai. Tous les providers dont la clé est présente
+// dans l'env rentrent automatiquement, primaire en tête.
+// Priorité intelligente (gratuits d'abord) : primaire → gemini → groq →
+// cerebras → openrouter → openai.
+function buildDefaultChain() {
+    const primary = (config.aiProvider || '').toLowerCase();
+    const prio = ['gemini', 'groq', 'cerebras', 'openrouter', 'openai'];
+    const ordered = [primary, ...prio.filter((p) => p !== primary)];
+    return ordered.filter((p) => initProvider(p) !== null);
+}
+
+let aiChain = buildDefaultChain();
+
+// Si le provider primaire (config.aiProvider) n'a pas pu s'initialiser
+// (clé absente, invalide, …) mais qu'un autre de la chaîne est dispo, on
+// promeut celui-là en `aiService`. Sans ça, `?dazai on` et l'auto-reply
+// refuseraient de fonctionner alors que buildDefaultChain() a trouvé des
+// providers utilisables via leurs clés .env — la chaîne de fallback
+// serait du code mort.
+if (!aiService && aiChain.length) {
+    aiService = initProvider(aiChain[0]);
+    if (aiService) {
+        console.log(`[AI] Primaire ${config.aiProvider} indispo → promotion ${aiService.provider} depuis la chaîne de fallback.`);
+    }
+}
+
+if (aiService) {
+    const extras = aiChain.filter((p) => p !== aiService.provider);
+    console.log(`[AI] Service prêt (primaire=${aiService.provider}, model=${aiService._currentModel()}, autoReply=${config.aiAutoReply ? 'ON' : 'OFF'}).`);
+    if (extras.length) {
+        console.log(`[AI] Fallback chain: ${aiChain.join(' → ')}`);
+    } else {
+        console.log(`[AI] Fallback chain: aucun (ajoute d'autres clés .env pour activer la bascule auto).`);
+    }
+} else {
+    console.log(`[AI] Service non initialisé: aucune clé API détectée pour ${config.aiProvider}. Renseigne ${envKeyForProvider(config.aiProvider)} dans .env puis redémarre pour activer ?dazai.`);
+}
+
+// Bascule systématiquement sur le provider suivant dès qu'une erreur HTTP
+// remonte (quota 429, crédits 402, clé révoquée 401/403, modèle rejeté 400,
+// surcharge 5xx, …). L'intention : zéro message bloqué tant qu'au moins un
+// provider du pool répond. Si notre propre payload est en cause (bug 400
+// reproductible partout), tous les providers échoueront et on notifiera
+// l'owner à la fin — même comportement qu'avant, en un peu plus verbeux côté
+// logs. Mieux vaut ça que rater un switch gratuit.
+const AI_FALLBACK_STATUSES = new Set([400, 401, 402, 403, 404, 408, 409, 413, 422, 429, 500, 502, 503, 504]);
+// Codes axios correspondant à un problème réseau / hors HTTP (pas de
+// `err.response`). On les traite comme des erreurs "retryables sur provider
+// suivant" parce que c'est typiquement la machine du provider qui ne répond
+// pas — un autre provider peut tout à fait marcher.
+const AI_FALLBACK_NET_CODES = new Set(['ECONNABORTED', 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'ETIMEDOUT', 'EAI_AGAIN']);
+
+async function aiGenerateWithFallback(conversationId, text, opts = {}) {
+    if (!aiChain.length) throw new Error('Aucun provider IA disponible.');
+    let lastErr = null;
+    for (let i = 0; i < aiChain.length; i++) {
+        const providerName = aiChain[i];
+        const svc = initProvider(providerName);
+        if (!svc) continue;
+        try {
+            const reply = await svc.generateReply(conversationId, text, { mode: opts.mode || 'default' });
+            if (i > 0) {
+                console.log(`[AI] Fallback réussi : ${aiChain[0]} → ${providerName}.`);
+            }
+            return { reply, provider: providerName };
+        } catch (err) {
+            // On attache le nom du provider qui a échoué pour que la notification
+            // owner affiche le bon provider (sinon on reporterait toujours le
+            // primaire même si c'est le dernier de la chaîne qui a planté).
+            err.failedProvider = providerName;
+            lastErr = err;
+            const status = err?.status;
+            const code = err?.code;
+            const isNetErr = !status && AI_FALLBACK_NET_CODES.has(code);
+            const hasNext = i < aiChain.length - 1;
+            if (hasNext && (AI_FALLBACK_STATUSES.has(status) || isNetErr)) {
+                const why = status ? `status ${status}` : `code ${code}`;
+                console.log(`[AI] ${providerName} a échoué (${why}), bascule sur ${aiChain[i + 1]}...`);
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw lastErr || new Error('Tous les providers IA ont échoué.');
+}
+
+// Throttle des requêtes IA par conversation : si le bot traite déjà un message
+// d'un contact, les messages suivants attendent la fin — on évite les doublons
+// de réponses et la facture OpenRouter qui explose.
+const aiPendingByConv = new Set();
+// Notifications d'erreur IA déjà envoyées à l'owner (une par statut HTTP) pour
+// ne pas spam sa DM à chaque message reçu quand les crédits sont épuisés.
+const aiErrorsNotified = new Set();
 
 // --- STATE & CACHE ---
 const reactedStatusCache = new Set();
@@ -1110,73 +1264,355 @@ async function connectToWhatsApp() {
                     } else if (arg === 'status') {
                         await socket.sendMessage(targetChat, { text: `📊 Status Anti-Delete: ${config.antiDeleteEnabled ? "ON ✅" : "OFF ❌"}` }, { quoted: msg });
                     }
+                } else if (cmd === 'dazai') {
+                    const arg = (textLower.split(/\s+/)[1] || '').trim();
+                    if (arg === 'on') {
+                        if (!aiService) {
+                            await socket.sendMessage(targetChat, { text: `❌ IA non initialisée. Ajoute \`GEMINI_API_KEY\` (ou \`OPENROUTER_API_KEY\` / \`OPENAI_API_KEY\`) dans \`.env\` puis redémarre.` }, { quoted: msg });
+                        } else {
+                            config.aiAutoReply = true;
+                            await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA : ACTIVÉ*\n\nLes messages privés non-commandes recevront une réponse automatique (mimique de ta personnalité, via ${aiService.provider}).` }, { quoted: msg });
+                        }
+                    } else if (arg === 'off') {
+                        config.aiAutoReply = false;
+                        await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA : DÉSACTIVÉ*` }, { quoted: msg });
+                    } else if (arg === 'clear') {
+                        const scope = (textLower.split(/\s+/)[2] || '').trim();
+                        if (scope === 'all') {
+                            if (aiService) aiService.clearHistory();
+                            await socket.sendMessage(targetChat, { text: `🧹 Historique IA vidé (tous les contacts).` }, { quoted: msg });
+                        } else {
+                            // L'historique IA est clé par remoteJid pour les
+                            // chats privés, mais par `${remoteJid}:${participantJid}`
+                            // dans les groupes — un simple delete(remoteJid) ne
+                            // matcherait rien. Donc : groupes → clearHistoryByPrefix,
+                            // privés → clearHistory direct.
+                            let cleared = 0;
+                            if (aiService) {
+                                if (remoteJid.endsWith('@g.us')) {
+                                    cleared = aiService.clearHistoryByPrefix(remoteJid);
+                                } else {
+                                    cleared = aiService.history.has(remoteJid) ? 1 : 0;
+                                    aiService.clearHistory(remoteJid);
+                                }
+                            }
+                            await socket.sendMessage(targetChat, { text: `🧹 Historique IA vidé pour cette conversation (${cleared} thread${cleared === 1 ? '' : 's'}).` }, { quoted: msg });
+                        }
+                    } else if (arg === 'stats') {
+                        if (!aiService) {
+                            await socket.sendMessage(targetChat, { text: `❌ IA non initialisée.` }, { quoted: msg });
+                        } else {
+                            const s = aiService.getStats();
+                            await socket.sendMessage(targetChat, { text: `📊 *Stats Chatbot IA*\n\n- État : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n- Provider : ${s.provider}\n- Modèle : ${s.model}\n- Conversations en mémoire : ${s.activeConversations}\n- Messages en mémoire : ${s.totalMessages}\n- Réponse aux groupes : ${config.aiRespondToGroups ? 'oui' : 'non'}` }, { quoted: msg });
+                        }
+                    } else if (arg === 'contacts' || arg === 'who' || arg === 'list') {
+                        // Liste des contacts avec qui le bot IA discute actuellement.
+                        // Les clés de aiSharedHistory sont :
+                        //   - privé : `XXXXX@s.whatsapp.net` (ou `@lid`)
+                        //   - groupe : `group@g.us:participant@s.whatsapp.net`
+                        const entries = Array.from(aiSharedHistory.entries());
+                        if (!entries.length) {
+                            await socket.sendMessage(targetChat, { text: `🤖 *Contacts IA actifs*\n\n_Aucune conversation en mémoire._\n\nLe bot n'a encore répondu à personne (ou les historiques ont été vidés).` }, { quoted: msg });
+                        } else {
+                            // On regroupe par contact humain (pas par thread) :
+                            // pour un groupe, plusieurs participants → plusieurs threads,
+                            // mais on les affiche séparément pour garder la granularité.
+                            const lines = entries.map(([key, hist]) => {
+                                const msgs = Array.isArray(hist) ? hist.length : 0;
+                                let label;
+                                if (key.includes(':')) {
+                                    const [gjid, pjid] = key.split(':');
+                                    const gnum = gjid.split('@')[0];
+                                    const pnum = (pjid || '').split('@')[0];
+                                    label = `👥 ${pnum} _(groupe ${gnum.slice(0, 12)}…)_`;
+                                } else {
+                                    const num = key.split('@')[0];
+                                    const type = key.endsWith('@g.us') ? '👥' : '💬';
+                                    label = `${type} +${num}`;
+                                }
+                                return `• ${label} — ${msgs} msg${msgs > 1 ? 's' : ''}`;
+                            });
+                            // Tri par nombre de messages décroissant (plus actifs en haut)
+                            const sorted = lines.sort((a, b) => {
+                                const na = parseInt(a.match(/(\d+) msg/)?.[1] || '0', 10);
+                                const nb = parseInt(b.match(/(\d+) msg/)?.[1] || '0', 10);
+                                return nb - na;
+                            });
+                            const total = entries.reduce((s, [, h]) => s + (Array.isArray(h) ? h.length : 0), 0);
+                            // WhatsApp limite ~4096 chars par message — si > 40 contacts on tronque.
+                            const shown = sorted.slice(0, 40).join('\n');
+                            const more = sorted.length > 40 ? `\n… _(+${sorted.length - 40} autres conversations)_` : '';
+                            await socket.sendMessage(targetChat, { text: `🤖 *Contacts IA actifs* (${entries.length} conversation${entries.length > 1 ? 's' : ''}, ${total} messages)\n\n${shown}${more}\n\n_Pour vider tout :_ ${currentPrefix}dazai clear all\n_Pour vider cette convo :_ ${currentPrefix}dazai clear` }, { quoted: msg });
+                        }
+                    } else if (arg === 'model') {
+                        const newModel = textArgs.split(/\s+/).slice(1).join(' ').trim();
+                        if (!newModel) {
+                            await socket.sendMessage(targetChat, { text: `❌ Usage : ${currentPrefix}dazai model <nom>\nEx: ${currentPrefix}dazai model openai/gpt-4o-mini` }, { quoted: msg });
+                        } else {
+                            config.aiModel = newModel;
+                            // Chaque AIService stocke une COPIE de config (via spread dans
+                            // initProvider) → modifier `config.aiModel` global ne suffit pas.
+                            // On pousse le nouveau modèle uniquement sur le primaire ; les
+                            // providers de fallback gardent leur modèle par défaut (un
+                            // `gemini-2.5-flash` n'a aucun sens envoyé à Groq).
+                            if (aiService) aiService.config.aiModel = newModel;
+                            // Reset des erreurs notifiées : un changement de modèle
+                            // peut débloquer la situation (ex. passer d'un modèle
+                            // payant à un modèle gratuit côté OpenRouter).
+                            aiErrorsNotified.clear();
+                            await socket.sendMessage(targetChat, { text: `✅ Modèle IA → ${newModel}` }, { quoted: msg });
+                        }
+                    } else if (arg === 'reload') {
+                        // Recharger personality.json sur TOUS les providers du pool,
+                        // pas juste le primaire. Sinon un provider de fallback
+                        // appelé après le reload enverrait encore l'ancien prompt.
+                        let n = 0;
+                        for (const svc of aiPool.values()) {
+                            svc.reloadPersonality();
+                            n++;
+                        }
+                        await socket.sendMessage(targetChat, { text: `🔄 Personnalité rechargée depuis personality.json (${n} provider${n === 1 ? '' : 's'}).` }, { quoted: msg });
+                    } else if (arg === 'provider') {
+                        // ?dazai provider             → affiche primaire + chaîne
+                        // ?dazai provider <nom>       → bascule le primaire
+                        const target = (textLower.split(/\s+/)[2] || '').trim();
+                        if (!target) {
+                            const available = SUPPORTED_PROVIDERS.map(p => {
+                                const ok = initProvider(p) !== null;
+                                const mark = p === (aiService && aiService.provider) ? ' ⭐' : '';
+                                return `  ${ok ? '🟢' : '⚪'} ${p}${mark}${ok ? '' : `  (clé ${envKeyForProvider(p)} absente)`}`;
+                            }).join('\n');
+                            await socket.sendMessage(targetChat, { text: `🤖 *Provider IA*\n\nPrimaire : *${aiService ? aiService.provider : '(aucun)'}*\nChaîne fallback : ${aiChain.join(' → ') || '(vide)'}\n\n*Disponibles :*\n${available}\n\n_Usage :_ ${currentPrefix}dazai provider <nom>` }, { quoted: msg });
+                        } else if (!SUPPORTED_PROVIDERS.includes(target)) {
+                            await socket.sendMessage(targetChat, { text: `❌ Provider inconnu : \`${target}\`.\nValides : ${SUPPORTED_PROVIDERS.join(', ')}.` }, { quoted: msg });
+                        } else {
+                            const svc = initProvider(target);
+                            if (!svc) {
+                                await socket.sendMessage(targetChat, { text: `❌ Provider ${target} non disponible — renseigne ${envKeyForProvider(target)} dans .env puis redémarre.` }, { quoted: msg });
+                            } else {
+                                config.aiProvider = target;
+                                config.aiModel = '';
+                                aiService = svc;
+                                aiChain = buildDefaultChain();
+                                aiErrorsNotified.clear();
+                                await socket.sendMessage(targetChat, { text: `✅ Provider primaire → *${target}* (${svc._currentModel()})\nChaîne fallback : ${aiChain.join(' → ')}` }, { quoted: msg });
+                            }
+                        }
+                    } else if (arg === 'chain') {
+                        // ?dazai chain                       → affiche la chaîne
+                        // ?dazai chain gemini groq cerebras  → fixe la chaîne
+                        // ?dazai chain reset                 → reconstruit la chaîne auto
+                        const parts = textLower.split(/\s+/).slice(2).filter(Boolean);
+                        if (!parts.length) {
+                            await socket.sendMessage(targetChat, { text: `🔗 *Chaîne fallback*\n${aiChain.length ? aiChain.map((p, i) => `${i + 1}. ${p}`).join('\n') : '_(vide)_'}\n\n_Usage :_\n- ${currentPrefix}dazai chain <p1> <p2>...   (ex: ${currentPrefix}dazai chain gemini groq cerebras)\n- ${currentPrefix}dazai chain reset` }, { quoted: msg });
+                        } else if (parts.length === 1 && parts[0] === 'reset') {
+                            aiChain = buildDefaultChain();
+                            await socket.sendMessage(targetChat, { text: `🔗 Chaîne réinitialisée : ${aiChain.join(' → ') || '(vide)'}` }, { quoted: msg });
+                        } else {
+                            const invalid = parts.filter(p => !SUPPORTED_PROVIDERS.includes(p));
+                            if (invalid.length) {
+                                await socket.sendMessage(targetChat, { text: `❌ Providers inconnus : ${invalid.join(', ')}.\nValides : ${SUPPORTED_PROVIDERS.join(', ')}.` }, { quoted: msg });
+                            } else {
+                                const usable = parts.filter(p => initProvider(p) !== null);
+                                const missing = parts.filter(p => initProvider(p) === null);
+                                if (!usable.length) {
+                                    await socket.sendMessage(targetChat, { text: `❌ Aucun des providers listés n'a de clé dans .env.` }, { quoted: msg });
+                                } else {
+                                    aiChain = usable;
+                                    const warn = missing.length ? `\n⚠️ Ignorés (pas de clé) : ${missing.join(', ')}` : '';
+                                    await socket.sendMessage(targetChat, { text: `🔗 Chaîne fallback → ${aiChain.join(' → ')}${warn}` }, { quoted: msg });
+                                }
+                            }
+                        }
+                    } else if (arg === 'allow' || arg === 'block' || arg === 'romantic' || arg === 'copine' || arg === 'copines') {
+                        // ?dazai allow   add|remove|list|clear [numéro]  → whitelist IA
+                        // ?dazai block   add|remove|list|clear [numéro]  → blacklist IA
+                        // ?dazai romantic add|remove|list|clear [numéro] → copines (mode romantique)
+                        const normArg = (arg === 'copine' || arg === 'copines') ? 'romantic' : arg;
+                        const listKey = normArg === 'allow'
+                            ? 'aiAllowedNumbers'
+                            : normArg === 'block'
+                                ? 'aiBlockedNumbers'
+                                : 'aiRomanticNumbers';
+                        const label = normArg === 'allow'
+                            ? 'whitelist IA'
+                            : normArg === 'block'
+                                ? 'blacklist IA'
+                                : 'copines (mode romantique)';
+                        const sub = (textLower.split(/\s+/)[2] || '').trim();
+                        const num = (textArgs.split(/\s+/)[2] || '').replace(/[^\d]/g, '');
+                        if (!Array.isArray(config[listKey])) config[listKey] = [];
+                        const list = config[listKey];
+                        if (sub === 'add' && num) {
+                            if (!list.includes(num)) list.push(num);
+                            await socket.sendMessage(targetChat, { text: `✅ +${num} ajouté à la ${label}.\nActuelle : ${list.length ? list.map(n => '+' + n).join(', ') : '(vide)'}` }, { quoted: msg });
+                        } else if (sub === 'remove' && num) {
+                            const idx = list.indexOf(num);
+                            if (idx >= 0) list.splice(idx, 1);
+                            await socket.sendMessage(targetChat, { text: `🗑️ +${num} retiré de la ${label}.\nActuelle : ${list.length ? list.map(n => '+' + n).join(', ') : '(vide)'}` }, { quoted: msg });
+                        } else if (sub === 'clear') {
+                            config[listKey] = [];
+                            await socket.sendMessage(targetChat, { text: `🧹 ${label} vidée.` }, { quoted: msg });
+                        } else {
+                            // list par défaut
+                            const hint = normArg === 'allow'
+                                ? `_Si vide, le bot répond à *tous* les contacts. Sinon il ne répond qu'à ceux listés._`
+                                : normArg === 'block'
+                                    ? `_Les contacts listés ne reçoivent jamais de réponse IA, même s'ils sont dans la whitelist._`
+                                    : `_Les contacts listés déclenchent la personnalité ROMANTIQUE (mots doux : bébé / mon cœur / ma belle / chérie / bb). Les autres gardent le Daziano standard._`;
+                            await socket.sendMessage(targetChat, { text: `🤖 *${label}* (${list.length})\n${list.length ? list.map(n => '• +' + n).join('\n') : '_(vide)_'}\n\n${hint}\n\n*Usage*\n- ${currentPrefix}dazai ${normArg} add <numéro>\n- ${currentPrefix}dazai ${normArg} remove <numéro>\n- ${currentPrefix}dazai ${normArg} clear` }, { quoted: msg });
+                        }
+                    } else {
+                        // ── Status chatbot IA : rendu "dashboard" lisible (banner
+                        //    stylisé + colonnes providers + compteurs + commandes
+                        //    les plus utiles). Évite le gros mur de texte.
+                        const p = currentPrefix;
+                        const allProviders = ['gemini', 'groq', 'cerebras', 'openrouter', 'openai'];
+                        const providerLabel = { gemini: 'Gemini', groq: 'Groq', cerebras: 'Cerebras', openrouter: 'OpenRouter', openai: 'OpenAI' };
+                        const chainPos = Object.fromEntries(aiChain.map((n, i) => [n, i + 1]));
+                        const providerLines = allProviders.map(name => {
+                            const inPool = aiPool.has(name) && aiPool.get(name);
+                            const isActive = aiService && aiService.provider === name;
+                            const pos = chainPos[name];
+                            const dot = isActive ? '🟢' : inPool ? '⚪' : '⚫';
+                            const tag = isActive ? '  ← actif' : (pos ? `  (fallback #${pos})` : '');
+                            const model = inPool ? ` · \`${inPool._currentModel()}\`` : '';
+                            return `${dot} *${providerLabel[name]}*${model}${tag}`;
+                        }).join('\n');
+                        const autoReply = config.aiAutoReply ? '🟢 *ACTIVÉ*' : '🔴 *DÉSACTIVÉ*';
+                        const convCount = aiService ? aiService.getStats().activeConversations : 0;
+                        const allowArr = config.aiAllowedNumbers || [];
+                        const blockArr = config.aiBlockedNumbers || [];
+                        const romArr = config.aiRomanticNumbers || [];
+                        const allowLine = allowArr.length ? `*${allowArr.length}* contact${allowArr.length > 1 ? 's' : ''}` : '_tous les contacts_';
+                        const blockLine = blockArr.length ? `*${blockArr.length}* bloqué${blockArr.length > 1 ? 's' : ''}` : '_aucun_';
+                        const romLine = romArr.length ? `*${romArr.length}* copine${romArr.length > 1 ? 's' : ''} 💕` : '_aucune_';
+
+                        const statusText =
+`╭─────────────────────────╮
+│  🤖  *D A Z A I*   ·  💬  │
+│    _chatbot personnel_    │
+╰─────────────────────────╯
+
+┌─ ⚡ *Auto-reply*
+│   ${autoReply}
+│
+├─ 🧠 *Providers*
+│   ${providerLines.split('\n').join('\n│   ')}
+│
+├─ 🔁 *Chaîne de fallback*
+│   ${aiChain.length ? aiChain.map(n => providerLabel[n] || n).join(' → ') : '_(vide)_'}
+│
+├─ 👥 *Audience*
+│   Whitelist : ${allowLine}
+│   Blacklist : ${blockLine}
+│   Romantique : ${romLine}
+│
+└─ 💬 *Conversations actives* : ${convCount}
+
+━━━━━━━━━━━━━━━━━━━━━━
+⚙️  *RACCOURCIS*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}dazai on* / *off*         _activer / couper_
+◦ *${p}dazai stats*              _compteurs_
+◦ *${p}dazai contacts*           _conversations en cours_
+◦ *${p}dazai provider* _nom_       _switch primaire_
+◦ *${p}dazai model* _nom_          _change le modèle actif_
+◦ *${p}dazai chain* _p1 p2 …|reset_  _ordre fallback_
+◦ *${p}dazai reload*             _recharge personality.json_
+◦ *${p}dazai clear* [_all_]         _reset historique_
+
+━━━━━━━━━━━━━━━━━━━━━━
+👥  *FILTRES*
+━━━━━━━━━━━━━━━━━━━━━━
+◦ *${p}dazai allow* _add/remove/list/clear_ _num_
+◦ *${p}dazai block* _add/remove/list/clear_ _num_
+◦ *${p}dazai romantic* _add/remove/list/clear_ _num_
+   _→ mots doux : bébé / mon cœur / ma belle / chérie / bb_`;
+                        await socket.sendMessage(targetChat, { text: statusText }, { quoted: msg });
+                    }
                 } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h' || cmd === 'guide') {
                     const p = currentPrefix;
+                    // ── Uptime formaté compact (xd xh xm)
+                    const upSec = Math.max(0, Math.floor(Date.now() / 1000) - botStartTime);
+                    const ud = Math.floor(upSec / 86400);
+                    const uh = Math.floor((upSec % 86400) / 3600);
+                    const um = Math.floor((upSec % 3600) / 60);
+                    const uptime = ud ? `${ud}j ${uh}h ${um}m` : uh ? `${uh}h ${um}m` : `${um}m`;
+                    const aiDot = aiService && config.aiAutoReply ? '🟢' : aiService ? '🟡' : '🔴';
+                    const ownerTag = config.ownerName || 'DAZ';
+
                     const menuText =
-`╭━━━━━━━━━━━━━━━━━━━━━╮
-┃  🤖  *D A Z B O T*   ┃
-┃      ·  v1.0  ·      ┃
-╰━━━━━━━━━━━━━━━━━━━━━╯
+`╭─────────────────────────╮
+│  🤖  *D A Z B O T*   ·   │
+│    _command center v1_    │
+╰─────────────────────────╯
 
-_Préfixe actuel_ : *${p}*
-_Tape une commande en réponse à un message quand c'est précisé (📎)._
+┌─ ⚙️ *État*
+│   Préfixe  : *${p}*
+│   Uptime   : *${uptime}*
+│   Chatbot  : ${aiDot} *${config.aiAutoReply ? 'ON' : 'OFF'}*
+│   Owner    : *${ownerTag}*
+│
+└─ _📎 = réponds à un message_
 
-━━━━━━━━━━━━━━━━━━━━━━
-🎯  *STATUS — LIKE CIBLÉ*
-━━━━━━━━━━━━━━━━━━━━━━
-◦ *${p}dazonly add* _num_ _emoji_
-  _ex: ${p}dazonly add 22955724800 🔥_
-◦ *${p}dazonly remove* _num_
-◦ *${p}dazonly list*
-◦ *${p}dazonly off*
 
-━━━━━━━━━━━━━━━━━━━━━━
-🟢  *STATUS — GLOBAL / VISION*
-━━━━━━━━━━━━━━━━━━━━━━
-◦ *${p}dazstatus on|off*
-  _on : like tout le monde_
-  _off : like uniquement le focus_
-◦ *${p}dazview on|off*
-  _vision seule, aucun like même focus_
-◦ *${p}dazdiscrete add* _num_
-◦ *${p}dazdiscrete list*
-◦ *${p}dazstatusuni* _emoji|random_
-◦ *${p}dazsticker*  📎
-◦ *${p}dazstats*
+🎯  *LIKE CIBLÉ*
+ • *${p}dazonly add* _num_ _emoji_
+ • *${p}dazonly remove* _num_
+ • *${p}dazonly list*
+ • *${p}dazonly off*
 
-━━━━━━━━━━━━━━━━━━━━━━
-🛡️  *PROTECTION AUTOMATIQUE*
-━━━━━━━━━━━━━━━━━━━━━━
-◦ *${p}antidelete on|off*
-◦ *${p}dazantionly add|remove|list|off* _num_
-◦ *${p}dazvv on|off*
-  _capture vue-unique (toutes sources)_
 
-━━━━━━━━━━━━━━━━━━━━━━
+🟢  *STATUS · VISION*
+ • *${p}dazstatus on|off*  _like tous_
+ • *${p}dazview on|off*    _vision seule_
+ • *${p}dazdiscrete add* _num_
+ • *${p}dazdiscrete list*
+ • *${p}dazstatusuni* _emoji|random_
+ • *${p}dazsticker*  📎
+ • *${p}dazstats*
+
+
+🛡️  *PROTECTION*
+ • *${p}antidelete on|off*
+ • *${p}dazantionly add* _num_
+ • *${p}dazantionly remove|list|off*
+ • *${p}dazvv on|off*  _vue-unique_
+
+
 📅  *PLANIFICATEUR*
-━━━━━━━━━━━━━━━━━━━━━━
-◦ *${p}ps* _HH:MM_  📎
-  _ou ${p}ps JJ/MM HH:MM_
-  _ou ${p}ps JJ/MM/AAAA HH:MM_
-  _→ statut programmé_
-◦ *${p}pm* _HH:MM num_  📎
-  _→ message privé programmé_
-◦ *${p}planlist*
-◦ *${p}plancancel* _id_
-◦ *${p}planreset*
+ • *${p}ps* _HH:MM_  📎
+ • *${p}ps* _JJ/MM HH:MM_  📎
+ • *${p}ps* _JJ/MM/AAAA HH:MM_  📎
+ • *${p}pm* _HH:MM num_  📎
+ • *${p}planlist*
+ • *${p}plancancel* _id_
+ • *${p}planreset*
 
-━━━━━━━━━━━━━━━━━━━━━━
-⚙️  *CONFIGURATION*
-━━━━━━━━━━━━━━━━━━━━━━
-◦ *${p}setprefix* _symbole_
-  _ex: ${p}setprefix !_
-◦ *${p}dazreset*   _reset tous les focus_
-◦ *${p}dazconnect* _show|on|off_
-  _show : réaffiche la bannière_
-◦ *${p}host*       _infos serveur_
 
-━━━━━━━━━━━━━━━━━━━━━━
-_© 2025 · DAZBOT by DAZ_`;
+🤖  *CHATBOT IA*
+ • *${p}dazai*            _dashboard_
+ • *${p}dazai on|off*
+ • *${p}dazai provider* _nom_
+ • *${p}dazai chain* _p1 p2 …_
+ • *${p}dazai allow* _add|remove|list_
+ • *${p}dazai block* _add|remove|list_
+ • *${p}dazai romantic* _add|remove|list_
+ • *${p}dazai model* _nom_
+ • *${p}dazai reload*
+ • *${p}dazai clear* [_all_]
+ • *${p}dazai stats*
+
+
+⚙️  *CONFIG*
+ • *${p}setprefix* _symbole_
+ • *${p}dazconnect* _show|on|off_
+ • *${p}dazreset*   _reset focus_
+ • *${p}host*       _infos serveur_
+
+─────────────────────────
+   _© 2025 · DAZBOT · ${ownerTag}_`;
                     await socket.sendMessage(targetChat, { text: menuText }, { quoted: msg });
                 }
 
@@ -1223,6 +1659,115 @@ _© 2025 · DAZBOT by DAZ_`;
                     } catch (e) {
                         console.error("[ERROR] Download failed:", e.message);
                         await socket.sendMessage(remoteJid, { text: "❌ Erreur de téléchargement." }, { quoted: msg });
+                    }
+                }
+            }
+
+            // --- AI AUTO-REPLY (chatbot IA porté depuis Chat-Bot-Dazi) ---
+            // Répond aux messages texte non-commandes reçus en privé (ou groupes
+            // si aiRespondToGroups=true). Désactivé par défaut, doit être activé
+            // avec ?dazai on. Fallback silencieux si l'IA est HS.
+            if (
+                aiService &&
+                config.aiAutoReply &&
+                !isStatus &&
+                !isCmd &&
+                !msg.key.fromMe &&
+                textContent &&
+                textContent.trim().length > 0 &&
+                (m.type === 'notify')
+            ) {
+                const isGroup = remoteJid.endsWith('@g.us');
+                if (!isGroup || config.aiRespondToGroups) {
+                    // Résolution LID→PN pour whitelist/blacklist par numéro.
+                    const rawSender = participantJid || remoteJid;
+                    let resolvedPn = msg.key.participantPn;
+                    if (!resolvedPn && rawSender && rawSender.endsWith('@lid')) {
+                        try {
+                            resolvedPn = await socket.signalRepository?.lidMapping?.getPNForLID?.(rawSender);
+                        } catch (_) {}
+                    }
+                    const senderNumber = (resolvedPn || rawSender).split('@')[0].split(':')[0];
+
+                    const allowed = (config.aiAllowedNumbers || []).map(String);
+                    const blocked = (config.aiBlockedNumbers || []).map(String);
+                    const romantic = (config.aiRomanticNumbers || []).map(String);
+                    const blockedHit = blocked.includes(senderNumber);
+                    const allowedHit = allowed.length === 0 || allowed.includes(senderNumber);
+                    // Mode personnalité : 'romantic' si le numéro est dans la liste
+                    // des copines, sinon 'default' (Daziano standard).
+                    const personalityMode = romantic.includes(senderNumber) ? 'romantic' : 'default';
+
+                    // Scope historique : en groupe on garde un thread par (groupe+participant)
+                    // pour que deux contacts dans le même groupe ne partagent pas le contexte.
+                    const conversationId = isGroup ? `${remoteJid}:${rawSender}` : remoteJid;
+
+                    if (!blockedHit && allowedHit && !aiPendingByConv.has(conversationId)) {
+                        aiPendingByConv.add(conversationId);
+                        (async () => {
+                            try {
+                                // Présence "composing" pour faire naturel
+                                try { await socket.sendPresenceUpdate('composing', remoteJid); } catch (_) {}
+
+                                const minMs = Number(config.aiTypingDelayMsMin) || 1000;
+                                const maxMs = Math.max(minMs, Number(config.aiTypingDelayMsMax) || 4000);
+                                const raw = 450 + textContent.length * 40;
+                                const clamped = Math.min(maxMs, Math.max(minMs, raw));
+                                const factor = 0.85 + Math.random() * 0.3; // ±15%
+                                const delayMs = Math.round(clamped * factor);
+                                await new Promise((r) => setTimeout(r, delayMs));
+
+                                const { reply, provider: usedProvider } = await aiGenerateWithFallback(conversationId, textContent.trim(), { mode: personalityMode });
+                                try { await socket.sendPresenceUpdate('paused', remoteJid); } catch (_) {}
+                                if (reply) {
+                                    await socket.sendMessage(remoteJid, { text: reply }, { quoted: msg });
+                                    const via = usedProvider !== aiChain[0] ? ` [via ${usedProvider}]` : '';
+                                    const modeTag = personalityMode === 'romantic' ? ' 💕' : '';
+                                    console.log(`[AI] +${senderNumber}${modeTag}${via} → "${reply.slice(0, 60)}${reply.length > 60 ? '…' : ''}"`);
+                                }
+                            } catch (e) {
+                                // Toujours couper le "composing" même en cas d'erreur API,
+                                // sinon le contact voit "est en train d'écrire..." indéfiniment.
+                                try { await socket.sendPresenceUpdate('paused', remoteJid); } catch (_) {}
+                                console.error('[AI] Erreur réponse :', e?.message || e);
+
+                                // Notifie l'owner une seule fois par type d'erreur pour ne pas
+                                // spammer : 401 = clé invalide, 402 = pas de crédits,
+                                // 403 = bannie, 429 = quota dépassé (RPD/TPM/RPM).
+                                const status = e?.status;
+                                if (status === 401 || status === 402 || status === 403 || status === 429) {
+                                    const ownerJid = socket.user?.id?.split(':')[0] + '@s.whatsapp.net';
+                                    if (ownerJid && !aiErrorsNotified.has(status)) {
+                                        aiErrorsNotified.add(status);
+                                        // Messages & URLs de récupération spécifiques au provider qui a
+                                        // réellement échoué (= dernier testé dans la chaîne de fallback),
+                                        // pas le primaire : l'owner doit savoir quelle clé/facture
+                                        // corriger. Fallback sur le primaire si l'info manque.
+                                        const provider = e?.failedProvider || aiService?.provider;
+                                        const urls = {
+                                            gemini:     { keys: 'https://aistudio.google.com/apikey',               billing: 'https://ai.google.dev/pricing' },
+                                            groq:       { keys: 'https://console.groq.com/keys',                    billing: 'https://console.groq.com/settings/billing' },
+                                            cerebras:   { keys: 'https://cloud.cerebras.ai/',                       billing: 'https://cloud.cerebras.ai/' },
+                                            openrouter: { keys: 'https://openrouter.ai/keys',                       billing: 'https://openrouter.ai/settings/credits' },
+                                            openai:     { keys: 'https://platform.openai.com/api-keys',             billing: 'https://platform.openai.com/settings/organization/billing' },
+                                        }[provider] || { keys: '(doc provider)', billing: '(doc provider)' };
+                                        const providerLabel = provider.charAt(0).toUpperCase() + provider.slice(1);
+                                        const reason = status === 429
+                                            ? `⏳ Quota ${providerLabel} dépassé (rate-limit / requêtes par jour).\n${provider === 'gemini' ? `Le plan gratuit Gemini est limité à ~250 req/jour sur gemini-2.5-flash. Essaie un modèle plus généreux :\n• ${config.prefix || '?'}dazai model gemini-2.5-flash-lite  (1000 req/jour)\n• ${config.prefix || '?'}dazai model gemini-2.0-flash        (200 req/jour, 1M TPM)\nOu attends ~24h pour le reset, ou recharge : ${urls.billing}` : `Attends quelques minutes, ou change de modèle : ${config.prefix || '?'}dazai model <autre-modèle>\nDoc quotas : ${urls.billing}`}`
+                                            : status === 402
+                                                ? `💳 Quota ${providerLabel} épuisé (paiement requis).\nVérifie ta facturation : ${urls.billing}`
+                                                : status === 401
+                                                    ? `🔑 Clé ${providerLabel} invalide ou révoquée.\nRégénère une clé : ${urls.keys}`
+                                                    : `⛔ Accès refusé par ${providerLabel} (status 403) — quota gratuit dépassé, modèle indisponible dans ta région ou compte bloqué.`;
+                                        try {
+                                            await socket.sendMessage(ownerJid, { text: `⚠️ *Chatbot IA en échec*\n\n${reason}\n\n_L'auto-reply est toujours ON mais ne peut pas répondre tant que ce n'est pas résolu. Fais ${config.prefix || '?'}dazai off pour le couper._` });
+                                        } catch (_) {}
+                                    }
+                                }
+                            } finally {
+                                aiPendingByConv.delete(conversationId);
+                            }
+                        })();
                     }
                 }
             }
