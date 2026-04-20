@@ -102,6 +102,11 @@ const parseSchedule = (raw) => {
         if (!inRange(day, 1, daysInMonth(year, month - 1))) return { error: `Jour hors plage pour ${String(month).padStart(2, '0')}/${year}.` };
         if (!inRange(year, 1970, 3000)) return { error: "Année hors plage." };
         target = new Date(year, month - 1, day, hour, min, 0, 0);
+        // Les formats HH:MM et JJ/MM basculent automatiquement dans le futur
+        // (demain, année prochaine). Pour JJ/MM/AAAA on a une date explicite :
+        // si elle est passée, c'est probablement une erreur de frappe — on
+        // rejette au lieu de laisser checkTasks supprimer la tâche dans 15s.
+        if (target.getTime() <= now.getTime()) return { error: "Cette date est déjà passée." };
     } else if ((m = s.match(dmHm))) {
         const [, d, mo, h, mi] = m;
         const day = parseInt(d, 10);
@@ -167,7 +172,11 @@ const listTasks = () => scheduledTasks.slice().sort((a, b) => a.ts - b.ts);
 
 const clearTasks = () => {
     const count = scheduledTasks.length;
-    scheduledTasks = [];
+    // Mutation in-place : checkTasks() peut être en train d'itérer le tableau
+    // pendant un await. Une réaffectation (`scheduledTasks = []`) ferait que
+    // l'itération continue sur l'ancienne référence pendant que le reste du
+    // module voit la nouvelle — provoque des reads `undefined` qui crashent.
+    scheduledTasks.splice(0, scheduledTasks.length);
     save();
     return count;
 };
@@ -178,7 +187,24 @@ const clearTasks = () => {
  * `ts <= now` (avec une fenêtre de rattrapage de 2 min pour les tâches
  * manquées — par ex. bot offline au moment cible).
  */
+// Lock de ré-entrance : setInterval fire toutes les 15s mais checkTasks est
+// async et peut prendre plus que 15s à cause de uploads média ou du réseau.
+// Sans ce verrou, 2 invocations concurrentes lisent le même tableau et
+// envoient chacune le statut/message → doublons côté destinataire, puis le
+// splice() du premier retire la mauvaise tâche pour le second → corruption.
+let isCheckingTasks = false;
+
 const checkTasks = async (sock) => {
+    if (isCheckingTasks) return;
+    isCheckingTasks = true;
+    try {
+        await _checkTasksInner(sock);
+    } finally {
+        isCheckingTasks = false;
+    }
+};
+
+const _checkTasksInner = async (sock) => {
     const now = Date.now();
     const graceMs = 2 * 60 * 1000;
 
