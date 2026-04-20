@@ -240,11 +240,17 @@ const _checkTasksInner = async (sock) => {
                 if (jidList.length === 0) {
                     console.warn('[SCHEDULER] ⚠️ Aucun destinataire dans la liste — le statut va sûrement être invisible à tous.');
                 }
-                await sock.sendMessage('status@broadcast', task.message, {
-                    backgroundColor: task.backgroundColor || '#000000',
-                    font: 1,
-                    statusJidList: jidList
-                });
+                // backgroundColor/font ne s'appliquent qu'aux statuts texte. Les
+                // passer pour un status image/vidéo peut perturber le rendu côté
+                // app mobile (d'après des rapports dans la commu Baileys).
+                const isTextStatus = !!(task.message && (task.message.text || task.message.conversation)) &&
+                    !task.message.image && !task.message.video && !task.message.audio;
+                const sendOpts = { statusJidList: jidList };
+                if (isTextStatus) {
+                    sendOpts.backgroundColor = task.backgroundColor || '#000000';
+                    sendOpts.font = 1;
+                }
+                await sock.sendMessage('status@broadcast', task.message, sendOpts);
             } else if (task.type === 'message') {
                 await sock.sendMessage(task.target, task.message);
             }
@@ -254,6 +260,30 @@ const _checkTasksInner = async (sock) => {
             await sock.sendMessage(ownerJid, {
                 text: `✅ Tâche #${task.id} (${task.type})${suffix} exécutée à ${task.label}.`
             });
+
+            // Preuve de publication côté user : si WhatsApp ne synchronise pas
+            // le statut dans la liste "Mes statuts" du téléphone de l'émetteur
+            // (limitation connue quand on poste depuis un appareil lié), on
+            // renvoie une copie du contenu dans sa discussion personnelle pour
+            // qu'il ait au moins une preuve visible.
+            if (task.type === 'status') {
+                try {
+                    const proofHeader = { text: `📤 *Statut publié à ${task.label}* (copie ci-dessous)` };
+                    await sock.sendMessage(ownerJid, proofHeader);
+                    const copy = { ...task.message };
+                    if (copy.text) {
+                        await sock.sendMessage(ownerJid, { text: copy.text });
+                    } else if (copy.image) {
+                        await sock.sendMessage(ownerJid, { image: copy.image, caption: copy.caption });
+                    } else if (copy.video) {
+                        await sock.sendMessage(ownerJid, { video: copy.video, caption: copy.caption });
+                    } else if (copy.audio) {
+                        await sock.sendMessage(ownerJid, { audio: copy.audio, mimetype: copy.mimetype || 'audio/mpeg', ptt: !!copy.ptt });
+                    }
+                } catch (copyErr) {
+                    console.warn(`[SCHEDULER] Copie preuve échouée: ${copyErr.message}`);
+                }
+            }
 
             scheduledTasks.splice(i, 1);
             save();

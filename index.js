@@ -114,11 +114,19 @@ const getStatusAudience = async () => {
 
     // On ajoute nos propres JIDs pour que le statut apparaisse dans le feed
     // Statuts de nos autres devices (téléphone + autres WA Web éventuels).
+    // On inclut les DEUX formats : PN (@s.whatsapp.net) et LID (@lid) parce que
+    // Baileys v7 privilégie l'adressage LID en interne et que l'app mobile peut
+    // ignorer la distribution côté self si uniquement le PN est fourni.
     try {
         const meId = sock?.user?.id || sock?.authState?.creds?.me?.id;
         if (meId) {
             const bare = meId.split(':')[0].split('@')[0];
             out.add(`${bare}@s.whatsapp.net`);
+        }
+        const meLid = sock?.user?.lid || sock?.authState?.creds?.me?.lid;
+        if (meLid) {
+            const bareLid = meLid.split(':')[0].split('@')[0];
+            out.add(`${bareLid}@lid`);
         }
     } catch (_) {}
 
