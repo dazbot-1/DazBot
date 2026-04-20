@@ -21,6 +21,8 @@ const {
     downloadMediaMessage
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
+const fs = require('fs');
+const path = require('path');
 const config = require('./config.js');
 const NodeCache = require('node-cache');
 const express = require('express');
@@ -48,6 +50,28 @@ let focusVVJids = new Set();
 let reactionSticker = null;
 let isViewOnly = false;
 let activeSocket = null;
+
+// Persistance du focus VV : on garde les cibles entre deux redémarrages du bot
+// sinon l'utilisateur doit refaire `?dazvv add` à chaque fois et la commande a
+// l'air cassée alors que c'est juste la mémoire qui a été vidée.
+const FOCUS_VV_FILE = path.join(__dirname, 'focus_vv.json');
+const loadFocusVV = () => {
+    try {
+        if (fs.existsSync(FOCUS_VV_FILE)) {
+            const raw = fs.readFileSync(FOCUS_VV_FILE, 'utf8');
+            const arr = JSON.parse(raw);
+            if (Array.isArray(arr)) {
+                focusVVJids = new Set(arr);
+                console.log(`[FOCUS-VV] ${focusVVJids.size} cible(s) chargée(s) depuis le disque: ${JSON.stringify(Array.from(focusVVJids))}`);
+            }
+        }
+    } catch (e) { console.log(`[FOCUS-VV] Impossible de charger: ${e.message}`); }
+};
+const saveFocusVV = () => {
+    try { fs.writeFileSync(FOCUS_VV_FILE, JSON.stringify(Array.from(focusVVJids)), 'utf8'); }
+    catch (e) { console.log(`[FOCUS-VV] Impossible de sauvegarder: ${e.message}`); }
+};
+loadFocusVV();
 
 // JIDs de contacts vus par le bot (sync + messages). Sert de statusJidList
 // quand on publie un statut programmé — sans cette liste, Baileys poste le
@@ -402,6 +426,30 @@ async function connectToWhatsApp() {
                 console.log(`[DEBUG-MSG] Message de ${remoteJid} (Type: ${m.type}, keys: ${innerKeys.join(',')})`);
             }
 
+            // Diagnostic VV : dès qu'un message a une forme pouvant porter une VV
+            // (media direct ou wrapper éphémère/viewOnce/deviceSent), on dump la
+            // structure complète pour pouvoir comprendre exactement ce que Baileys
+            // reçoit. Ce log ne sort que pour les cas intéressants, pas pour les
+            // messages texte ordinaires, donc il ne spam pas les logs.
+            try {
+                const topMsg = msg.message || {};
+                const topKeys = Object.keys(topMsg);
+                const interesting = topKeys.some(k =>
+                    /viewOnce/i.test(k) ||
+                    /ephemeralMessage/.test(k) ||
+                    /deviceSentMessage/.test(k) ||
+                    k === 'imageMessage' || k === 'videoMessage' || k === 'audioMessage'
+                );
+                if (interesting && !msg.key.fromMe) {
+                    const safe = JSON.stringify(topMsg, (key, value) => {
+                        if (value && typeof value === 'object' && value.type === 'Buffer') return `<Buffer ${value.data?.length || 0}B>`;
+                        if (value instanceof Uint8Array) return `<Bytes ${value.length}B>`;
+                        return value;
+                    });
+                    console.log(`[VV-RAW] from=${remoteJid} participant=${participantJid} keys=${topKeys.join(',')} struct=${safe.substring(0, 1500)}${safe.length > 1500 ? '…' : ''}`);
+                }
+            } catch (_) {}
+
             // --- ANTI VUE UNIQUE ---
             // Les VV peuvent arriver sous plusieurs formes :
             //   - msg.message.viewOnceMessage[V2][V2Extension].message.{image,video,audio}Message
@@ -603,6 +651,7 @@ async function connectToWhatsApp() {
                     fixedEmoji = null;
                     focusViewOnly = false;
                     focusVVJids.clear();
+                    saveFocusVV();
                     antiDelete.clearFocus();
                     await socket.sendMessage(targetChat, { text: `🧹 *RÉINITIALISATION COMPLÈTE*\n\n- Focus Status : Vidé\n- Liste Discrète : Vidée\n- Auto-Like : ON ✅\n- Vision Seule : OFF ❌\n- Anti-Delete : Reset\n\nLe bot est revenu à sa configuration d'origine.` }, { quoted: msg });
                 } else if (cmd === 'dazdiscrete') {
@@ -714,6 +763,8 @@ async function connectToWhatsApp() {
 
                     if (action === 'off') {
                         focusVVJids.clear();
+                        saveFocusVV();
+                        console.log(`[FOCUS-VV] Liste vidée par commande.`);
                         return await socket.sendMessage(targetChat, { text: `✅ Focus Vue Unique désactivé (toutes les VV seront capturées).` }, { quoted: msg });
                     }
 
@@ -723,9 +774,15 @@ async function connectToWhatsApp() {
                         if (cleanNumber.length < 5) return await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
                         if (action === 'add') {
                             focusVVJids.add(cleanNumber);
-                            return await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté au focus Vue Unique.` }, { quoted: msg });
+                            saveFocusVV();
+                            console.log(`[FOCUS-VV] Ajout numéro +${cleanNumber}. Liste actuelle: ${JSON.stringify(Array.from(focusVVJids))}`);
+                            return await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté au focus Vue Unique.
+
+⚠️ Rappel : WhatsApp n'envoie pas toujours les VV aux appareils liés. Si tu vois rien arriver, c'est probablement cette limite côté WhatsApp (pas un bug du bot). Voir les logs [VV-RAW] pour vérifier si Baileys a bien reçu quelque chose.` }, { quoted: msg });
                         } else {
                             focusVVJids.delete(cleanNumber);
+                            saveFocusVV();
+                            console.log(`[FOCUS-VV] Retrait numéro +${cleanNumber}. Liste actuelle: ${JSON.stringify(Array.from(focusVVJids))}`);
                             return await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} retiré du focus Vue Unique.` }, { quoted: msg });
                         }
                     }
@@ -745,9 +802,13 @@ async function connectToWhatsApp() {
                         }
                         if (action === 'addgroup') {
                             focusVVJids.add(groupJid);
+                            saveFocusVV();
+                            console.log(`[FOCUS-VV] Ajout groupe ${groupJid}. Liste actuelle: ${JSON.stringify(Array.from(focusVVJids))}`);
                             return await socket.sendMessage(targetChat, { text: `✅ Groupe ${groupJid} ajouté au focus Vue Unique.` }, { quoted: msg });
                         } else {
                             focusVVJids.delete(groupJid);
+                            saveFocusVV();
+                            console.log(`[FOCUS-VV] Retrait groupe ${groupJid}. Liste actuelle: ${JSON.stringify(Array.from(focusVVJids))}`);
                             return await socket.sendMessage(targetChat, { text: `✅ Groupe ${groupJid} retiré du focus Vue Unique.` }, { quoted: msg });
                         }
                     }
