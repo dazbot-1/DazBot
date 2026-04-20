@@ -1430,9 +1430,10 @@ _© 2025 · DAZBOT by DAZ_`;
                                 console.error('[AI] Erreur réponse :', e?.message || e);
 
                                 // Notifie l'owner une seule fois par type d'erreur pour ne pas
-                                // spammer : 401 = clé invalide, 402 = pas de crédits, 403 = bannie.
+                                // spammer : 401 = clé invalide, 402 = pas de crédits,
+                                // 403 = bannie, 429 = quota dépassé (RPD/TPM/RPM).
                                 const status = e?.status;
-                                if (status === 401 || status === 402 || status === 403) {
+                                if (status === 401 || status === 402 || status === 403 || status === 429) {
                                     const ownerJid = socket.user?.id?.split(':')[0] + '@s.whatsapp.net';
                                     if (ownerJid && !aiErrorsNotified.has(status)) {
                                         aiErrorsNotified.add(status);
@@ -1444,11 +1445,13 @@ _© 2025 · DAZBOT by DAZ_`;
                                             openai:     { keys: 'https://platform.openai.com/api-keys',             billing: 'https://platform.openai.com/settings/organization/billing' },
                                         }[provider] || { keys: '(doc provider)', billing: '(doc provider)' };
                                         const providerLabel = provider.charAt(0).toUpperCase() + provider.slice(1);
-                                        const reason = status === 402
-                                            ? `💳 Quota ${providerLabel} épuisé (paiement requis).\nVérifie ta facturation : ${urls.billing}`
-                                            : status === 401
-                                                ? `🔑 Clé ${providerLabel} invalide ou révoquée.\nRégénère une clé : ${urls.keys}`
-                                                : `⛔ Accès refusé par ${providerLabel} (status 403) — quota gratuit dépassé, modèle indisponible dans ta région ou compte bloqué.`;
+                                        const reason = status === 429
+                                            ? `⏳ Quota ${providerLabel} dépassé (rate-limit / requêtes par jour).\n${provider === 'gemini' ? `Le plan gratuit Gemini est limité à ~250 req/jour sur gemini-2.5-flash. Essaie un modèle plus généreux :\n• ${config.prefix || '?'}dazai model gemini-2.5-flash-lite  (1000 req/jour)\n• ${config.prefix || '?'}dazai model gemini-2.0-flash        (200 req/jour, 1M TPM)\nOu attends ~24h pour le reset, ou recharge : ${urls.billing}` : `Attends quelques minutes, ou change de modèle : ${config.prefix || '?'}dazai model <autre-modèle>\nDoc quotas : ${urls.billing}`}`
+                                            : status === 402
+                                                ? `💳 Quota ${providerLabel} épuisé (paiement requis).\nVérifie ta facturation : ${urls.billing}`
+                                                : status === 401
+                                                    ? `🔑 Clé ${providerLabel} invalide ou révoquée.\nRégénère une clé : ${urls.keys}`
+                                                    : `⛔ Accès refusé par ${providerLabel} (status 403) — quota gratuit dépassé, modèle indisponible dans ta région ou compte bloqué.`;
                                         try {
                                             await socket.sendMessage(ownerJid, { text: `⚠️ *Chatbot IA en échec*\n\n${reason}\n\n_L'auto-reply est toujours ON mais ne peut pas répondre tant que ce n'est pas résolu. Fais ${config.prefix || '?'}dazai off pour le couper._` });
                                         } catch (_) {}

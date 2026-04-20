@@ -81,7 +81,7 @@ module.exports = {
     // Modèle exact côté provider. Gemini : "gemini-2.5-flash" (rapide, gratuit)
     // ou "gemini-2.5-pro". OpenRouter : "openai/gpt-4o-mini" par ex.
     // OpenAI : "gpt-4o-mini". Laisse "" pour prendre le défaut du provider.
-    aiModel: "gemini-2.5-flash",
+    aiModel: "gemini-2.5-flash-lite",
     aiMaxContextMessages: 10,           // mémoire courte par contact
     aiRespondToGroups: false,           // true = répond aussi dans les groupes
     aiTypingDelayMsMin: 1000,           // délai min "typing" avant réponse

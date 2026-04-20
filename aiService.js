@@ -108,7 +108,7 @@ class AIService {
 
     _currentModel() {
         if (this.config.aiModel) return this.config.aiModel;
-        if (this.provider === 'gemini') return 'gemini-2.5-flash';
+        if (this.provider === 'gemini') return 'gemini-2.5-flash-lite';
         if (this.provider === 'openrouter') return 'openai/gpt-4o-mini';
         return 'gpt-4o-mini';
     }
