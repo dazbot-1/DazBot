@@ -108,6 +108,19 @@ function buildDefaultChain() {
 
 let aiChain = buildDefaultChain();
 
+// Si le provider primaire (config.aiProvider) n'a pas pu s'initialiser
+// (clé absente, invalide, …) mais qu'un autre de la chaîne est dispo, on
+// promeut celui-là en `aiService`. Sans ça, `?dazai on` et l'auto-reply
+// refuseraient de fonctionner alors que buildDefaultChain() a trouvé des
+// providers utilisables via leurs clés .env — la chaîne de fallback
+// serait du code mort.
+if (!aiService && aiChain.length) {
+    aiService = initProvider(aiChain[0]);
+    if (aiService) {
+        console.log(`[AI] Primaire ${config.aiProvider} indispo → promotion ${aiService.provider} depuis la chaîne de fallback.`);
+    }
+}
+
 if (aiService) {
     const extras = aiChain.filter((p) => p !== aiService.provider);
     console.log(`[AI] Service prêt (primaire=${aiService.provider}, model=${aiService._currentModel()}, autoReply=${config.aiAutoReply ? 'ON' : 'OFF'}).`);
