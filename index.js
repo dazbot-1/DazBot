@@ -105,16 +105,17 @@ const getStatusAudience = async () => {
         if (!bareUser) continue;
 
         if (domain === 'lid') {
-            // Essaie de résoudre en numéro — si ça marche, on préfère le format PN.
+            // On ne conserve QUE les LIDs qui peuvent être résolus en numéro.
+            // Les @lid non résolus font rejeter tout le broadcast par WA
+            // (erreur 400 "received error in ack") → aucun contact ne voit rien.
             try {
                 const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(`${bareUser}@lid`);
                 if (pn) {
                     const bare = pn.split(':')[0].split('@')[0];
                     out.add(`${bare}@s.whatsapp.net`);
-                    continue;
                 }
             } catch (_) {}
-            out.add(`${bareUser}@lid`);
+            // Si la résolution échoue, on saute cet entry silencieusement.
         } else {
             out.add(`${bareUser}@s.whatsapp.net`);
         }

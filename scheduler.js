@@ -250,12 +250,9 @@ const _checkTasksInner = async (sock) => {
                     sendOpts.backgroundColor = task.backgroundColor || '#000000';
                     sendOpts.font = 1;
                 }
-                const sentStatus = await sock.sendMessage('status@broadcast', task.message, sendOpts);
-                // Force le téléphone principal à resynchroniser son feed
-                // "Mes statuts". Sans ça, les statuts postés depuis un
-                // linked device restent invisibles dans le feed local du
-                // mobile (limite Baileys v7 connue) même s'ils sont bien
-                // livrés à tous les contacts.
+                await sock.sendMessage('status@broadcast', task.message, sendOpts);
+                // Tente de forcer le téléphone principal à resynchroniser son feed
+                // "Mes statuts" — sans garantie, mais sans effet de bord négatif.
                 try {
                     if (typeof sock.resyncAppState === 'function') {
                         await sock.resyncAppState(['regular_high'], false);
@@ -263,21 +260,6 @@ const _checkTasksInner = async (sock) => {
                     }
                 } catch (e) {
                     console.warn('[SCHEDULER] resyncAppState échec:', e.message);
-                }
-                // Relaie aussi le message sur le chat privé avec soi-même
-                // en marquant "statusMessageMeJid" : certains téléphones
-                // déclenchent alors l'affichage dans "Mes statuts".
-                try {
-                    const meJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
-                    if (sentStatus && typeof sock.relayMessage === 'function') {
-                        await sock.relayMessage(meJid, sentStatus.message, {
-                            messageId: sentStatus.key.id,
-                            additionalAttributes: { 'category': 'peer' }
-                        });
-                        console.log('[SCHEDULER] Statut relayé vers soi-même pour synchro "Mes statuts".');
-                    }
-                } catch (e) {
-                    console.warn('[SCHEDULER] Relay self échec:', e.message);
                 }
             } else if (task.type === 'message') {
                 await sock.sendMessage(task.target, task.message);
