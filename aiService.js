@@ -143,22 +143,41 @@ class AIService {
             body.frequency_penalty = 0.3;
         }
 
+        // Retry sur 429 / 503 (surcharge provider, surtout Gemini free tier
+        // qui renvoie "This model is currently experiencing high demand"
+        // ~30-50% du temps). Backoff exponentiel : 1s, 2s, 4s. On ne retry
+        // PAS 401/402/403 (erreurs persistantes, re-essayer ne sert à rien).
+        const RETRYABLE = new Set([429, 503]);
+        const MAX_ATTEMPTS = 3;
+        let lastErr = null;
         try {
-            const resp = await axios.post(url, body, {
-                headers: {
-                    Authorization: `Bearer ${this.apiKey}`,
-                    'Content-Type': 'application/json',
-                    ...this.extraHeaders,
-                },
-                timeout: 30000,
-            });
+            for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                try {
+                    const resp = await axios.post(url, body, {
+                        headers: {
+                            Authorization: `Bearer ${this.apiKey}`,
+                            'Content-Type': 'application/json',
+                            ...this.extraHeaders,
+                        },
+                        timeout: 30000,
+                    });
 
-            const reply = resp?.data?.choices?.[0]?.message?.content?.trim();
-            if (!reply) throw new Error('Réponse IA vide.');
+                    const reply = resp?.data?.choices?.[0]?.message?.content?.trim();
+                    if (!reply) throw new Error('Réponse IA vide.');
 
-            history.push({ role: 'assistant', content: reply });
-            this.history.set(conversationId, history);
-            return reply;
+                    history.push({ role: 'assistant', content: reply });
+                    this.history.set(conversationId, history);
+                    return reply;
+                } catch (err) {
+                    lastErr = err;
+                    const status = err?.response?.status;
+                    if (!RETRYABLE.has(status) || attempt === MAX_ATTEMPTS) throw err;
+                    const waitMs = 1000 * Math.pow(2, attempt - 1);
+                    console.log(`[AI] Retry ${attempt}/${MAX_ATTEMPTS - 1} dans ${waitMs}ms (status ${status}).`);
+                    await new Promise((r) => setTimeout(r, waitMs));
+                }
+            }
+            throw lastErr;
         } catch (err) {
             const status = err?.response?.status;
             const code = err?.code;

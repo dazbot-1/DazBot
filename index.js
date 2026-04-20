@@ -1193,11 +1193,41 @@ async function connectToWhatsApp() {
                             aiService.reloadPersonality();
                             await socket.sendMessage(targetChat, { text: `🔄 Personnalité rechargée depuis personality.json.` }, { quoted: msg });
                         }
+                    } else if (arg === 'allow' || arg === 'block') {
+                        // ?dazai allow add|remove|list|clear [numéro]
+                        // ?dazai block add|remove|list|clear [numéro]
+                        // Si `allow` est non vide, le bot ne répond IA qu'à ces numéros.
+                        // `block` bloque un numéro même si `allow` le permet.
+                        const listKey = arg === 'allow' ? 'aiAllowedNumbers' : 'aiBlockedNumbers';
+                        const label = arg === 'allow' ? 'whitelist IA' : 'blacklist IA';
+                        const sub = (textLower.split(/\s+/)[2] || '').trim();
+                        const num = (textArgs.split(/\s+/)[2] || '').replace(/[^\d]/g, '');
+                        if (!Array.isArray(config[listKey])) config[listKey] = [];
+                        const list = config[listKey];
+                        if (sub === 'add' && num) {
+                            if (!list.includes(num)) list.push(num);
+                            await socket.sendMessage(targetChat, { text: `✅ +${num} ajouté à la ${label}.\nActuelle : ${list.length ? list.map(n => '+' + n).join(', ') : '(vide)'}` }, { quoted: msg });
+                        } else if (sub === 'remove' && num) {
+                            const idx = list.indexOf(num);
+                            if (idx >= 0) list.splice(idx, 1);
+                            await socket.sendMessage(targetChat, { text: `🗑️ +${num} retiré de la ${label}.\nActuelle : ${list.length ? list.map(n => '+' + n).join(', ') : '(vide)'}` }, { quoted: msg });
+                        } else if (sub === 'clear') {
+                            config[listKey] = [];
+                            await socket.sendMessage(targetChat, { text: `🧹 ${label} vidée.` }, { quoted: msg });
+                        } else {
+                            // list par défaut
+                            const hint = arg === 'allow'
+                                ? `_Si vide, le bot répond à *tous* les contacts. Sinon il ne répond qu'à ceux listés._`
+                                : `_Les contacts listés ne reçoivent jamais de réponse IA, même s'ils sont dans la whitelist._`;
+                            await socket.sendMessage(targetChat, { text: `🤖 *${label}* (${list.length})\n${list.length ? list.map(n => '• +' + n).join('\n') : '_(vide)_'}\n\n${hint}\n\n*Usage*\n- ${currentPrefix}dazai ${arg} add <numéro>\n- ${currentPrefix}dazai ${arg} remove <numéro>\n- ${currentPrefix}dazai ${arg} clear` }, { quoted: msg });
+                        }
                     } else {
                         const providerInfo = aiService
                             ? `🟢 init (${aiService.provider} / ${aiService._currentModel()})`
                             : `🔴 non init — ajoute ${envKeyForProvider(config.aiProvider)}`;
-                        await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA DazBot*\n\n- Service : ${providerInfo}\n- Auto-reply : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n\n*Commandes*\n- ${currentPrefix}dazai on / off\n- ${currentPrefix}dazai stats\n- ${currentPrefix}dazai clear           (cette conversation)\n- ${currentPrefix}dazai clear all       (toutes)\n- ${currentPrefix}dazai model <nom>\n- ${currentPrefix}dazai reload           (recharge personality.json)` }, { quoted: msg });
+                        const allowList = (config.aiAllowedNumbers || []).map(n => '+' + n).join(', ') || '(tous)';
+                        const blockList = (config.aiBlockedNumbers || []).map(n => '+' + n).join(', ') || '(aucun)';
+                        await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA DazBot*\n\n- Service : ${providerInfo}\n- Auto-reply : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n- Whitelist : ${allowList}\n- Blacklist : ${blockList}\n\n*Commandes*\n- ${currentPrefix}dazai on / off\n- ${currentPrefix}dazai stats\n- ${currentPrefix}dazai clear           (cette conversation)\n- ${currentPrefix}dazai clear all       (toutes)\n- ${currentPrefix}dazai model <nom>\n- ${currentPrefix}dazai reload           (recharge personality.json)\n- ${currentPrefix}dazai allow add/remove/list/clear <numéro>   _(restreindre à certains contacts)_\n- ${currentPrefix}dazai block add/remove/list/clear <numéro>   _(ignorer certains contacts)_` }, { quoted: msg });
                     }
                 } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h' || cmd === 'guide') {
                     const p = currentPrefix;
