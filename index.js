@@ -55,29 +55,34 @@ let activeSocket = null;
 const knownContactsJidList = new Set();
 const getStatusAudience = () => {
     const out = new Set();
-    // Récupère nos propres JIDs pour les exclure (les devices synchronisent
-    // automatiquement, inclure son propre numéro provoque error 400).
-    const meIds = new Set();
-    try {
-        const sock = activeSocket;
-        if (sock?.user?.id) meIds.add(sock.user.id.split(':')[0].split('@')[0]);
-        if (sock?.authState?.creds?.me?.id) meIds.add(sock.authState.creds.me.id.split(':')[0].split('@')[0]);
-        if (sock?.authState?.creds?.me?.lid) meIds.add(sock.authState.creds.me.lid.split(':')[0].split('@')[0]);
-    } catch (_) {}
-
     for (const jid of knownContactsJidList) {
         if (!jid) continue;
         if (jid.endsWith('@g.us')) continue;
         if (jid === 'status@broadcast' || jid === 'broadcast') continue;
-        // Normalise vers JID utilisateur propre (retire suffixe device :N)
         const [user, domain] = jid.split('@');
         if (!domain) continue;
         if (domain !== 's.whatsapp.net' && domain !== 'lid') continue;
         const bareUser = user.split(':')[0];
         if (!bareUser) continue;
-        if (meIds.has(bareUser)) continue; // pas d'auto-inclusion
         out.add(`${bareUser}@${domain}`);
     }
+    // On AJOUTE nos propres JIDs (PN + LID) pour que le statut apparaisse
+    // aussi dans la liste de statuts de notre propre téléphone — sinon
+    // WhatsApp considère qu'on n'est pas destinataire et on ne le voit pas
+    // apparaître dans le flux de statuts à côté de celui des contacts.
+    try {
+        const sock = activeSocket;
+        const meId = sock?.user?.id || sock?.authState?.creds?.me?.id;
+        if (meId) {
+            const bare = meId.split(':')[0].split('@')[0];
+            out.add(`${bare}@s.whatsapp.net`);
+        }
+        const meLid = sock?.authState?.creds?.me?.lid;
+        if (meLid) {
+            const bareLid = meLid.split(':')[0].split('@')[0];
+            out.add(`${bareLid}@lid`);
+        }
+    } catch (_) {}
     return Array.from(out);
 };
 
