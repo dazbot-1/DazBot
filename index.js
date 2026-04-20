@@ -121,11 +121,12 @@ const getStatusAudience = async () => {
         }
     }
 
-    // On ajoute nos propres JIDs pour que le statut apparaisse dans le feed
-    // Statuts de nos autres devices (téléphone + autres WA Web éventuels).
-    // On inclut les DEUX formats : PN (@s.whatsapp.net) et LID (@lid) parce que
-    // Baileys v7 privilégie l'adressage LID en interne et que l'app mobile peut
-    // ignorer la distribution côté self si uniquement le PN est fourni.
+    // On ajoute nos propres JIDs (PN uniquement, jamais de @lid brut) pour que
+    // le statut arrive aussi dans le feed Statuts de nos autres devices. La
+    // règle "que des @s.whatsapp.net résolus" s'applique aussi à self : un
+    // @lid non-mappable dans statusJidList fait rejeter TOUT le broadcast
+    // (erreur 400 "received error in ack") — on ne peut pas se permettre ça
+    // uniquement pour se livrer à soi-même.
     try {
         const meId = sock?.user?.id || sock?.authState?.creds?.me?.id;
         if (meId) {
@@ -134,8 +135,13 @@ const getStatusAudience = async () => {
         }
         const meLid = sock?.user?.lid || sock?.authState?.creds?.me?.lid;
         if (meLid) {
-            const bareLid = meLid.split(':')[0].split('@')[0];
-            out.add(`${bareLid}@lid`);
+            try {
+                const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(meLid);
+                if (pn) {
+                    const bare = pn.split(':')[0].split('@')[0];
+                    out.add(`${bare}@s.whatsapp.net`);
+                }
+            } catch (_) {}
         }
     } catch (_) {}
 
@@ -517,17 +523,23 @@ async function connectToWhatsApp() {
             if (!msg || !msg.message) return;
 
             // --- PATCH VV EXPÉRIMENTAL ---
-            // Quand captureAllVV est actif et qu'on reçoit un message dont la
-            // structure est suspecte (conversation courte ou wrapper inconnu),
-            // on demande explicitement à WA de re-livrer le contenu via
+            // Quand captureAllVV est actif et qu'on reçoit un message avec un
+            // wrapper de type INCONNU (pas un type standard), on demande
+            // explicitement à WA de re-livrer le contenu via
             // requestPlaceholderResend. WA bloque normalement la re-livraison
-            // des VV aux linked devices mais certains forks rapportent que
-            // ça passe parfois si on le demande au bon moment.
+            // aux linked devices mais certains forks rapportent que ça passe
+            // parfois.
+            //
+            // IMPORTANT : l'ancienne heuristique incluait aussi "conversation
+            // de moins de 200 chars" qui matchait la quasi-totalité des
+            // messages texte normaux ("ok", "salut", etc.) — ça déclenchait
+            // un placeholder resend sur presque chaque message reçu, risque
+            // évident de rate-limit / flag du compte. On ne conserve plus que
+            // le marqueur "wrapper inconnu" qui est bien plus ciblé.
             if (captureAllVV && !msg.key.fromMe && msg.message && socket.requestPlaceholderResend) {
                 const topKeys = Object.keys(msg.message);
-                const isShortConv = topKeys.includes('conversation') && (msg.message.conversation || '').length < 200;
                 const hasUnknownWrapper = topKeys.some(k => !/^(conversation|extendedTextMessage|imageMessage|videoMessage|audioMessage|stickerMessage|documentMessage|reactionMessage|protocolMessage|messageContextInfo|senderKeyDistributionMessage|contactMessage|locationMessage|pollCreationMessage|pollUpdateMessage)$/.test(k));
-                if (isShortConv || hasUnknownWrapper) {
+                if (hasUnknownWrapper) {
                     try {
                         const reqId = await socket.requestPlaceholderResend(msg.key);
                         if (reqId) console.log(`[VV-PATCH] requestPlaceholderResend(${msg.key.id}) → requestId=${reqId} (topKeys=${topKeys.join(',')})`);
