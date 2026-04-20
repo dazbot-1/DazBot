@@ -116,13 +116,32 @@ const parseSchedule = (raw) => {
         if (!inRange(hour, 0, 23) || !inRange(min, 0, 59)) return { error: "Heure hors plage (00:00 à 23:59)." };
         if (!inRange(month, 1, 12)) return { error: "Mois hors plage (1 à 12)." };
         let year = now.getFullYear();
-        if (!inRange(day, 1, daysInMonth(year, month - 1))) return { error: `Jour hors plage pour ${String(month).padStart(2, '0')}/${year}.` };
+        // Si le jour est invalide pour l'année en cours (ex: 29/02 en année
+        // non bissextile), on tente l'année suivante avant de rejeter — ça
+        // évite de refuser "29/02" juste parce qu'on est en 2027 alors que
+        // 29/02/2028 serait parfaitement valide.
+        if (!inRange(day, 1, daysInMonth(year, month - 1))) {
+            const nextYear = year + 1;
+            if (!inRange(day, 1, daysInMonth(nextYear, month - 1))) {
+                return { error: `Jour hors plage pour ${String(month).padStart(2, '0')} (ni en ${year} ni en ${nextYear}).` };
+            }
+            year = nextYear;
+        }
         target = new Date(year, month - 1, day, hour, min, 0, 0);
         if (target.getTime() <= now.getTime()) {
             // Bascule sur l'année suivante ; re-valide le jour (29/02 peut
-            // devenir invalide si l'année suivante n'est pas bissextile).
-            year += 1;
-            if (!inRange(day, 1, daysInMonth(year, month - 1))) return { error: `Jour hors plage pour ${String(month).padStart(2, '0')}/${year}.` };
+            // devenir invalide si l'année suivante n'est pas bissextile —
+            // dans ce cas on saute encore d'un an pour trouver une bissextile).
+            let candidate = year + 1;
+            let tries = 0;
+            while (!inRange(day, 1, daysInMonth(candidate, month - 1)) && tries < 8) {
+                candidate += 1;
+                tries += 1;
+            }
+            if (!inRange(day, 1, daysInMonth(candidate, month - 1))) {
+                return { error: `Jour hors plage pour ${String(month).padStart(2, '0')}.` };
+            }
+            year = candidate;
             target = new Date(year, month - 1, day, hour, min, 0, 0);
         }
     } else if ((m = s.match(hmOnly))) {

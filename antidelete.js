@@ -50,13 +50,22 @@ const reportRevocation = async (sock, deletedId) => {
 
     const cached = messageCache.get(deletedId);
     if (cached) {
-        // Si focusAntiDeleteJids n'est pas vide, on ne rapporte QUE si le message vient d'une cible (contact ou chat/groupe)
+        // Si focusAntiDeleteJids n'est pas vide, on ne rapporte QUE si le message
+        // vient d'une cible (contact ou chat/groupe). On compare contre le JID
+        // brut, le numéro extrait du JID brut, ET le PN résolu — ce dernier est
+        // essentiel car en v7 cached.from est très souvent un LID (ex:
+        // 161358163222743@lid) qui ne matchera jamais un numéro comme 22955724800.
         if (focusAntiDeleteJids.size > 0) {
-            const senderNum = cached.from.split('@')[0];
-            const chatNum = cached.chat.split('@')[0];
-            
-            const isTargeted = Array.from(focusAntiDeleteJids).some(jid => 
-                cached.from.includes(jid) || cached.chat.includes(jid) || senderNum === jid || chatNum === jid
+            const senderNum = cached.from.split('@')[0].split(':')[0];
+            const chatNum = cached.chat.split('@')[0].split(':')[0];
+            const senderPnNum = cached.fromPn ? cached.fromPn.split('@')[0].split(':')[0] : null;
+
+            const isTargeted = Array.from(focusAntiDeleteJids).some(jid =>
+                cached.from.includes(jid)
+                || cached.chat.includes(jid)
+                || senderNum === jid
+                || chatNum === jid
+                || (senderPnNum && (senderPnNum === jid || cached.fromPn.includes(jid)))
             );
 
             if (!isTargeted) {
