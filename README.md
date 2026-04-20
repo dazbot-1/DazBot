@@ -58,7 +58,7 @@ Programme l'envoi de messages **privés** à l'heure et la date voulues. Survit 
 Tout est paramétrable dans `config.js` via `bootBannerUrl`, `bootQuotes`, `ownerName`, `ownerNumber` (voir [Configuration](#configuration)).
 
 ### 🤖 Chatbot IA (porté depuis [Chat-Bot-Dazi](https://github.com/dazbot-1/Chat-Bot-Dazi))
-Répond **automatiquement** aux messages privés texte en imitant ta personnalité via **OpenRouter** (ou OpenAI). Le bot tient un historique court par contact (10 derniers échanges), affiche un indicateur "composing", attend un délai réaliste (~40ms/char ±15%) puis envoie la réponse.
+Répond **automatiquement** aux messages privés texte en imitant ta personnalité via **Gemini** (Google AI Studio, plan gratuit), **OpenRouter** ou **OpenAI**. Le bot tient un historique court par contact (10 derniers échanges), affiche un indicateur "composing", attend un délai réaliste (~40ms/char ±15%) puis envoie la réponse. En cas d'erreur API (crédits épuisés, clé invalide, etc.) l'owner reçoit une notification explicite dans sa DM.
 
 - Désactivé par défaut : active avec `?dazai on`
 - Personnalité = prompt système + description + 48 exemples de style dans `personality.json` (modifiable, rechargeable à chaud avec `?dazai reload`)
@@ -75,7 +75,10 @@ Commandes :
 - `?dazai model <nom>` — change le modèle à chaud (ex: `openai/gpt-4o-mini`, `anthropic/claude-3.5-sonnet`)
 - `?dazai reload` — recharge `personality.json` sans redémarrer
 
-**Clé API** : mets `OPENROUTER_API_KEY=sk-or-...` (ou `OPENAI_API_KEY=sk-...`) dans un fichier `.env` à la racine du repo. Récupère-la sur https://openrouter.ai/keys (crédite au moins 1$ sur https://openrouter.ai/settings/credits pour `gpt-4o-mini`).
+**Clé API** : mets l'une des trois clés suivantes dans un fichier `.env` à la racine du repo selon le provider choisi dans `config.aiProvider` :
+- **Gemini** (défaut, gratuit) : `GEMINI_API_KEY=AIza...` → création sur https://aistudio.google.com/apikey (aucune carte requise, plan gratuit suffit)
+- **OpenRouter** : `OPENROUTER_API_KEY=sk-or-...` → https://openrouter.ai/keys (créditer au moins 1$ sur https://openrouter.ai/settings/credits)
+- **OpenAI** : `OPENAI_API_KEY=sk-...` → https://platform.openai.com/api-keys
 
 ### 👁️ Autre
 - `?dazsticker` (réponse à un sticker) — téléchargement
@@ -132,8 +135,8 @@ module.exports = {
 
     // Chatbot IA (facultatif, nécessite une clé dans .env)
     aiAutoReply: false,                // active avec ?dazai on
-    aiProvider: "openrouter",          // ou "openai"
-    aiModel: "openai/gpt-4o-mini",
+    aiProvider: "gemini",              // "gemini" | "openrouter" | "openai"
+    aiModel: "gemini-2.5-flash",       // ex. "gemini-2.5-pro", "openai/gpt-4o-mini", "gpt-4o-mini"...
     aiMaxContextMessages: 10,
     aiRespondToGroups: false,
     aiTypingDelayMsMin: 1000,
@@ -146,8 +149,13 @@ module.exports = {
 **Variables d'environnement** (fichier `.env` à la racine, déjà dans `.gitignore`) :
 
 ```
-OPENROUTER_API_KEY=sk-or-v1-...
-# Ou alternativement :
+# Par défaut (gratuit) : Google AI Studio
+GEMINI_API_KEY=AIza...
+
+# Ou OpenRouter (payant) :
+# OPENROUTER_API_KEY=sk-or-v1-...
+
+# Ou OpenAI direct (payant) :
 # OPENAI_API_KEY=sk-...
 # OPENAI_PROJECT_ID=proj_...
 # OPENAI_ORG_ID=org-...

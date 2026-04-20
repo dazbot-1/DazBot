@@ -75,8 +75,13 @@ module.exports = {
     // (ou OpenAI) en imitant la personnalité définie dans personality.json.
     // Désactivé par défaut : active avec `?dazai on`.
     aiAutoReply: false,
-    aiProvider: "openrouter",           // "openrouter" ou "openai"
-    aiModel: "openai/gpt-4o-mini",      // modèle exact côté provider
+    // "gemini" (Google AI Studio, plan gratuit généreux) |
+    // "openrouter" | "openai"
+    aiProvider: "gemini",
+    // Modèle exact côté provider. Gemini : "gemini-2.5-flash" (rapide, gratuit)
+    // ou "gemini-2.5-pro". OpenRouter : "openai/gpt-4o-mini" par ex.
+    // OpenAI : "gpt-4o-mini". Laisse "" pour prendre le défaut du provider.
+    aiModel: "gemini-2.5-flash",
     aiMaxContextMessages: 10,           // mémoire courte par contact
     aiRespondToGroups: false,           // true = répond aussi dans les groupes
     aiTypingDelayMsMin: 1000,           // délai min "typing" avant réponse

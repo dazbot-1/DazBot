@@ -1,8 +1,11 @@
 /*
- * aiService.js — wrapper OpenRouter / OpenAI pour le chatbot IA intégré à DazBot.
+ * aiService.js — wrapper OpenRouter / OpenAI / Gemini pour le chatbot IA
+ * intégré à DazBot.
  *
  * Porté depuis dazbot-1/Chat-Bot-Dazi (src/services/openaiService.js) :
- *   - Compatibilité OpenRouter ET OpenAI (même API /chat/completions).
+ *   - Compatibilité OpenRouter, OpenAI ET Gemini (Gemini expose un endpoint
+ *     OpenAI-compatible : /v1beta/openai/chat/completions). Même code pour
+ *     les 3 providers, seule la baseURL + l'auth change.
  *   - Historique par conversation en mémoire (Map, bornée par
  *     aiMaxContextMessages).
  *   - Prompt système = personality.json (systemPrompt + description +
@@ -38,7 +41,20 @@ class AIService {
         this.config = config;
         const provider = (config.aiProvider || 'openrouter').toLowerCase();
 
-        if (provider === 'openrouter') {
+        if (provider === 'gemini') {
+            const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+            if (!apiKey) {
+                throw new Error('GEMINI_API_KEY manquante dans l\'environnement.');
+            }
+            this.apiKey = apiKey;
+            // Gemini expose un endpoint compatible OpenAI : même schema
+            // /chat/completions, donc on réutilise le même code que pour
+            // OpenRouter / OpenAI.
+            this.baseURL = process.env.GEMINI_BASE_URL
+                || 'https://generativelanguage.googleapis.com/v1beta/openai';
+            this.extraHeaders = {};
+            this.provider = 'gemini';
+        } else if (provider === 'openrouter') {
             const apiKey = process.env.OPENROUTER_API_KEY;
             if (!apiKey) {
                 throw new Error('OPENROUTER_API_KEY manquante dans l\'environnement.');
@@ -91,18 +107,21 @@ class AIService {
     }
 
     _currentModel() {
-        return (
-            this.config.aiModel ||
-            (this.provider === 'openrouter'
-                ? 'openai/gpt-4o-mini'
-                : 'gpt-4o-mini')
-        );
+        if (this.config.aiModel) return this.config.aiModel;
+        if (this.provider === 'gemini') return 'gemini-2.5-flash';
+        if (this.provider === 'openrouter') return 'openai/gpt-4o-mini';
+        return 'gpt-4o-mini';
     }
 
     async generateReply(conversationId, incomingMessage) {
         const maxContextMessages = Number(this.config.aiMaxContextMessages || 10);
 
-        let history = this.history.get(conversationId) || [];
+        // Copie défensive : on ne mute pas l'historique stocké tant que l'appel
+        // API n'a pas réussi, sinon un échec laisse un message utilisateur
+        // orphelin (sans réponse assistant) dans l'historique persistant —
+        // la prochaine requête verrait alors deux user successifs, ce qui
+        // dégrade les réponses.
+        let history = [...(this.history.get(conversationId) || [])];
         history.push({ role: 'user', content: incomingMessage });
 
         const maxEntries = maxContextMessages * 2;
@@ -116,9 +135,13 @@ class AIService {
             messages,
             temperature: 0.8,
             max_tokens: 250,
-            presence_penalty: 0.3,
-            frequency_penalty: 0.3,
         };
+        // presence_penalty / frequency_penalty ne sont pas supportés par
+        // l'endpoint OpenAI-compat de Gemini (renvoie HTTP 400).
+        if (this.provider !== 'gemini') {
+            body.presence_penalty = 0.3;
+            body.frequency_penalty = 0.3;
+        }
 
         try {
             const resp = await axios.post(url, body, {

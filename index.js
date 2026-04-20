@@ -1140,7 +1140,7 @@ async function connectToWhatsApp() {
                     const arg = (textLower.split(/\s+/)[1] || '').trim();
                     if (arg === 'on') {
                         if (!aiService) {
-                            await socket.sendMessage(targetChat, { text: `❌ IA non initialisée. Ajoute \`OPENROUTER_API_KEY\` dans \`.env\` puis redémarre.` }, { quoted: msg });
+                            await socket.sendMessage(targetChat, { text: `❌ IA non initialisée. Ajoute \`GEMINI_API_KEY\` (ou \`OPENROUTER_API_KEY\` / \`OPENAI_API_KEY\`) dans \`.env\` puis redémarre.` }, { quoted: msg });
                         } else {
                             config.aiAutoReply = true;
                             await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA : ACTIVÉ*\n\nLes messages privés non-commandes recevront une réponse automatique (mimique de ta personnalité, via ${aiService.provider}).` }, { quoted: msg });
@@ -1154,7 +1154,9 @@ async function connectToWhatsApp() {
                             if (aiService) aiService.clearHistory();
                             await socket.sendMessage(targetChat, { text: `🧹 Historique IA vidé (tous les contacts).` }, { quoted: msg });
                         } else {
-                            if (aiService) aiService.clearHistory(targetChat);
+                            // L'historique IA est clé par remoteJid (chat distant),
+                            // pas par targetChat (= self-JID pour les commandes owner).
+                            if (aiService) aiService.clearHistory(remoteJid);
                             await socket.sendMessage(targetChat, { text: `🧹 Historique IA vidé pour cette conversation.` }, { quoted: msg });
                         }
                     } else if (arg === 'stats') {
@@ -1170,6 +1172,10 @@ async function connectToWhatsApp() {
                             await socket.sendMessage(targetChat, { text: `❌ Usage : ${currentPrefix}dazai model <nom>\nEx: ${currentPrefix}dazai model openai/gpt-4o-mini` }, { quoted: msg });
                         } else {
                             config.aiModel = newModel;
+                            // Reset des erreurs notifiées : un changement de modèle
+                            // peut débloquer la situation (ex. passer d'un modèle
+                            // payant à un modèle gratuit côté OpenRouter).
+                            aiErrorsNotified.clear();
                             await socket.sendMessage(targetChat, { text: `✅ Modèle IA → ${newModel}` }, { quoted: msg });
                         }
                     } else if (arg === 'reload') {
