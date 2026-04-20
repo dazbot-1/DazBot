@@ -460,29 +460,36 @@ async function connectToWhatsApp() {
             } catch (e) { }
 
             const botJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
-            const ownerNumber = socket.user.id.split(':')[0].split('@')[0];
+            const connectedNumber = (config.ownerNumber && config.ownerNumber.trim())
+                || socket.user.id.split(':')[0].split('@')[0];
             const ownerName = (config.ownerName && config.ownerName.trim())
                 || socket.user.name
                 || socket.user.verifiedName
                 || 'Propriétaire';
-            const welcomeCaption = `╭───〔 🤖 *DAZBOT* 〕───⬣\n` +
-                `│ ߷ *Etat*          ➜ Connecté ✅\n` +
-                `│ ߷ *Propriétaire*  ➜ ${ownerName}\n` +
-                `│ ߷ *Numéro*        ➜ +${ownerNumber}\n` +
-                `│ ߷ *Mode*          ➜ Auto-Like\n` +
+            const welcomeCaption = `╭───〔 🤖 *DAZBOT connecté ✅* 〕───⬣\n` +
+                `│ ߷ *Propriétaire*      ➜ ${ownerName}\n` +
+                `│ ߷ *Numéro*            ➜ +${connectedNumber}\n` +
+                `│ ߷ *Personne connectée* ➜ +${connectedNumber}\n` +
+                `│ ߷ *Mode*              ➜ Auto-Like\n` +
                 `╰──────────────⬣`;
             console.log(welcomeCaption);
             try {
                 if (config.sendWelcomeMessage) {
-                    // Envoie d'abord la bannière (avec le texte en légende pour
-                    // que l'image + le message restent groupés côté UI mobile),
-                    // avec un fallback texte pur si l'image est introuvable.
-                    const bannerPath = path.join(__dirname, 'assets', 'boot_banner.png');
-                    if (fs.existsSync(bannerPath)) {
-                        await socket.sendMessage(botJid, {
-                            image: fs.readFileSync(bannerPath),
-                            caption: welcomeCaption
-                        });
+                    // Baileys accepte `image: { url: "..." }` : il télécharge
+                    // et upload lui-même à chaque envoi, pas besoin de stocker
+                    // le fichier localement. Fallback texte pur si l'URL est
+                    // vide ou si l'upload échoue.
+                    const bannerUrl = (config.bootBannerUrl || '').trim();
+                    if (bannerUrl) {
+                        try {
+                            await socket.sendMessage(botJid, {
+                                image: { url: bannerUrl },
+                                caption: welcomeCaption
+                            });
+                        } catch (imgErr) {
+                            console.warn('[INFO] Bannière KO, fallback texte:', imgErr.message);
+                            await socket.sendMessage(botJid, { text: welcomeCaption });
+                        }
                     } else {
                         await socket.sendMessage(botJid, { text: welcomeCaption });
                     }

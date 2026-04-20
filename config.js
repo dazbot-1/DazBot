@@ -35,6 +35,15 @@ module.exports = {
     // dans la discussion perso au démarrage du bot. Si vide, le bot utilise
     // le pushName WhatsApp récupéré automatiquement à la connexion.
     ownerName: "Daziano",
+
+    // Numéro du propriétaire affiché dans le message de connexion (sans +).
+    // Peut être différent du numéro d'appairage (phoneNumber) si tu veux
+    // afficher un autre numéro de contact.
+    ownerNumber: "22955724800",
+
+    // URL de la bannière envoyée à chaque connexion dans la discussion perso.
+    // Laisse vide pour désactiver l'image (le bot enverra juste le texte).
+    bootBannerUrl: "https://i.postimg.cc/rFR6bHgL/17762702118f23.png",
     
     // Supabase credentials for remote auth state storage 
     supabaseUrl: "", 
