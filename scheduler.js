@@ -81,23 +81,52 @@ const parseSchedule = (raw) => {
     const now = new Date();
     let target = null;
 
+    // Valide explicitement les plages : Date.setHours(25, 70) ne retourne
+    // pas NaN, il fait juste déborder vers le jour suivant à 02:10. Sans
+    // cette garde, "?ps 25:70" serait accepté silencieusement. Pareil pour
+    // les dates : 31/02 devient le 3 mars. On rejette avant de construire.
+    const inRange = (n, lo, hi) => Number.isInteger(n) && n >= lo && n <= hi;
+    const daysInMonth = (y, moIdx) => new Date(y, moIdx + 1, 0).getDate();
+
     let m;
     if ((m = s.match(dmyHm))) {
         const [, d, mo, y, h, mi] = m;
+        const day = parseInt(d, 10);
+        const month = parseInt(mo, 10);
         let year = parseInt(y, 10);
         if (year < 100) year += 2000;
-        target = new Date(year, parseInt(mo, 10) - 1, parseInt(d, 10), parseInt(h, 10), parseInt(mi, 10), 0, 0);
+        const hour = parseInt(h, 10);
+        const min = parseInt(mi, 10);
+        if (!inRange(hour, 0, 23) || !inRange(min, 0, 59)) return { error: "Heure hors plage (00:00 à 23:59)." };
+        if (!inRange(month, 1, 12)) return { error: "Mois hors plage (1 à 12)." };
+        if (!inRange(day, 1, daysInMonth(year, month - 1))) return { error: `Jour hors plage pour ${String(month).padStart(2, '0')}/${year}.` };
+        if (!inRange(year, 1970, 3000)) return { error: "Année hors plage." };
+        target = new Date(year, month - 1, day, hour, min, 0, 0);
     } else if ((m = s.match(dmHm))) {
         const [, d, mo, h, mi] = m;
-        const year = now.getFullYear();
-        target = new Date(year, parseInt(mo, 10) - 1, parseInt(d, 10), parseInt(h, 10), parseInt(mi, 10), 0, 0);
+        const day = parseInt(d, 10);
+        const month = parseInt(mo, 10);
+        const hour = parseInt(h, 10);
+        const min = parseInt(mi, 10);
+        if (!inRange(hour, 0, 23) || !inRange(min, 0, 59)) return { error: "Heure hors plage (00:00 à 23:59)." };
+        if (!inRange(month, 1, 12)) return { error: "Mois hors plage (1 à 12)." };
+        let year = now.getFullYear();
+        if (!inRange(day, 1, daysInMonth(year, month - 1))) return { error: `Jour hors plage pour ${String(month).padStart(2, '0')}/${year}.` };
+        target = new Date(year, month - 1, day, hour, min, 0, 0);
         if (target.getTime() <= now.getTime()) {
-            target.setFullYear(year + 1);
+            // Bascule sur l'année suivante ; re-valide le jour (29/02 peut
+            // devenir invalide si l'année suivante n'est pas bissextile).
+            year += 1;
+            if (!inRange(day, 1, daysInMonth(year, month - 1))) return { error: `Jour hors plage pour ${String(month).padStart(2, '0')}/${year}.` };
+            target = new Date(year, month - 1, day, hour, min, 0, 0);
         }
     } else if ((m = s.match(hmOnly))) {
         const [, h, mi] = m;
+        const hour = parseInt(h, 10);
+        const min = parseInt(mi, 10);
+        if (!inRange(hour, 0, 23) || !inRange(min, 0, 59)) return { error: "Heure hors plage (00:00 à 23:59)." };
         target = new Date(now);
-        target.setHours(parseInt(h, 10), parseInt(mi, 10), 0, 0);
+        target.setHours(hour, min, 0, 0);
         if (target.getTime() <= now.getTime()) {
             target.setDate(target.getDate() + 1);
         }
