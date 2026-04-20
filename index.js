@@ -1279,6 +1279,45 @@ async function connectToWhatsApp() {
                             const s = aiService.getStats();
                             await socket.sendMessage(targetChat, { text: `📊 *Stats Chatbot IA*\n\n- État : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n- Provider : ${s.provider}\n- Modèle : ${s.model}\n- Conversations en mémoire : ${s.activeConversations}\n- Messages en mémoire : ${s.totalMessages}\n- Réponse aux groupes : ${config.aiRespondToGroups ? 'oui' : 'non'}` }, { quoted: msg });
                         }
+                    } else if (arg === 'contacts' || arg === 'who' || arg === 'list') {
+                        // Liste des contacts avec qui le bot IA discute actuellement.
+                        // Les clés de aiSharedHistory sont :
+                        //   - privé : `XXXXX@s.whatsapp.net` (ou `@lid`)
+                        //   - groupe : `group@g.us:participant@s.whatsapp.net`
+                        const entries = Array.from(aiSharedHistory.entries());
+                        if (!entries.length) {
+                            await socket.sendMessage(targetChat, { text: `🤖 *Contacts IA actifs*\n\n_Aucune conversation en mémoire._\n\nLe bot n'a encore répondu à personne (ou les historiques ont été vidés).` }, { quoted: msg });
+                        } else {
+                            // On regroupe par contact humain (pas par thread) :
+                            // pour un groupe, plusieurs participants → plusieurs threads,
+                            // mais on les affiche séparément pour garder la granularité.
+                            const lines = entries.map(([key, hist]) => {
+                                const msgs = Array.isArray(hist) ? hist.length : 0;
+                                let label;
+                                if (key.includes(':')) {
+                                    const [gjid, pjid] = key.split(':');
+                                    const gnum = gjid.split('@')[0];
+                                    const pnum = (pjid || '').split('@')[0];
+                                    label = `👥 ${pnum} _(groupe ${gnum.slice(0, 12)}…)_`;
+                                } else {
+                                    const num = key.split('@')[0];
+                                    const type = key.endsWith('@g.us') ? '👥' : '💬';
+                                    label = `${type} +${num}`;
+                                }
+                                return `• ${label} — ${msgs} msg${msgs > 1 ? 's' : ''}`;
+                            });
+                            // Tri par nombre de messages décroissant (plus actifs en haut)
+                            const sorted = lines.sort((a, b) => {
+                                const na = parseInt(a.match(/(\d+) msg/)?.[1] || '0', 10);
+                                const nb = parseInt(b.match(/(\d+) msg/)?.[1] || '0', 10);
+                                return nb - na;
+                            });
+                            const total = entries.reduce((s, [, h]) => s + (Array.isArray(h) ? h.length : 0), 0);
+                            // WhatsApp limite ~4096 chars par message — si > 40 contacts on tronque.
+                            const shown = sorted.slice(0, 40).join('\n');
+                            const more = sorted.length > 40 ? `\n… _(+${sorted.length - 40} autres conversations)_` : '';
+                            await socket.sendMessage(targetChat, { text: `🤖 *Contacts IA actifs* (${entries.length} conversation${entries.length > 1 ? 's' : ''}, ${total} messages)\n\n${shown}${more}\n\n_Pour vider tout :_ ${currentPrefix}dazai clear all\n_Pour vider cette convo :_ ${currentPrefix}dazai clear` }, { quoted: msg });
+                        }
                     } else if (arg === 'model') {
                         const newModel = textArgs.split(/\s+/).slice(1).join(' ').trim();
                         if (!newModel) {
@@ -1394,7 +1433,7 @@ async function connectToWhatsApp() {
                         const chainInfo = aiChain.length ? aiChain.join(' → ') : '(vide)';
                         const allowList = (config.aiAllowedNumbers || []).map(n => '+' + n).join(', ') || '(tous)';
                         const blockList = (config.aiBlockedNumbers || []).map(n => '+' + n).join(', ') || '(aucun)';
-                        await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA DazBot*\n\n- Service : ${providerInfo}\n- Fallback auto : ${chainInfo}\n- Auto-reply : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n- Whitelist : ${allowList}\n- Blacklist : ${blockList}\n\n*Commandes*\n- ${currentPrefix}dazai on / off\n- ${currentPrefix}dazai stats\n- ${currentPrefix}dazai clear           (cette conversation)\n- ${currentPrefix}dazai clear all       (toutes)\n- ${currentPrefix}dazai model <nom>\n- ${currentPrefix}dazai provider [nom]  _(gemini/groq/cerebras/openrouter/openai)_\n- ${currentPrefix}dazai chain <p1 p2..|reset>   _(ordre de fallback)_\n- ${currentPrefix}dazai reload           (recharge personality.json)\n- ${currentPrefix}dazai allow add/remove/list/clear <numéro>   _(restreindre à certains contacts)_\n- ${currentPrefix}dazai block add/remove/list/clear <numéro>   _(ignorer certains contacts)_` }, { quoted: msg });
+                        await socket.sendMessage(targetChat, { text: `🤖 *Chatbot IA DazBot*\n\n- Service : ${providerInfo}\n- Fallback auto : ${chainInfo}\n- Auto-reply : ${config.aiAutoReply ? '🟢 ON' : '🔴 OFF'}\n- Whitelist : ${allowList}\n- Blacklist : ${blockList}\n\n*Commandes*\n- ${currentPrefix}dazai on / off\n- ${currentPrefix}dazai stats\n- ${currentPrefix}dazai contacts        _(liste les contacts actifs)_\n- ${currentPrefix}dazai clear           (cette conversation)\n- ${currentPrefix}dazai clear all       (toutes)\n- ${currentPrefix}dazai model <nom>\n- ${currentPrefix}dazai provider [nom]  _(gemini/groq/cerebras/openrouter/openai)_\n- ${currentPrefix}dazai chain <p1 p2..|reset>   _(ordre de fallback)_\n- ${currentPrefix}dazai reload           (recharge personality.json)\n- ${currentPrefix}dazai allow add/remove/list/clear <numéro>   _(restreindre à certains contacts)_\n- ${currentPrefix}dazai block add/remove/list/clear <numéro>   _(ignorer certains contacts)_` }, { quoted: msg });
                     }
                 } else if (cmd === 'menu' || cmd === 'help' || cmd === 'h' || cmd === 'guide') {
                     const p = currentPrefix;
