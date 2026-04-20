@@ -1099,9 +1099,15 @@ async function connectToWhatsApp() {
 │ ߷ *${currentPrefix}dazvv [on/off]*
 │   └ Récup VV globale (toutes sources)
 │
-│ 📅 *PLANIFICATEUR (HH:mm)*
-│ ߷ *${currentPrefix}ps [heure]* (Rép. média/texte)
-│ ߷ *${currentPrefix}pm [heure] [num]* (Rép. média)
+│ 📅 *PLANIFICATEUR*
+│ ߷ *${currentPrefix}ps [HH:MM]* (Rép. média/texte)
+│   └ Ou ${currentPrefix}ps JJ/MM HH:MM
+│   └ Ou ${currentPrefix}ps JJ/MM/AAAA HH:MM
+│ ߷ *${currentPrefix}pm [HH:MM] [num]* (Rép. média)
+│   └ Message privé programmé
+│ ߷ *${currentPrefix}planlist* : Liste des tâches
+│ ߷ *${currentPrefix}plancancel [id]* : Annuler
+│ ߷ *${currentPrefix}planreset* : Tout vider
 │
 ╰──────────────⬣
  *© 2025 DAZBOT BY DAZ*`;

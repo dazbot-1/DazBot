@@ -48,13 +48,18 @@ Vous pouvez contrôler le bot en temps réel directement en vous envoyant un mes
 | `?dazstatusuni random` | Annule l'emoji spécifique. Le bot recommence à piocher **aléatoirement** dans la grande liste de votre fichier `config.js`. |
 | `?dazonly <numéro> [emoji]` | **Focus Like.** Le bot ne likera que les statuts de ce numéro. Optionnel : précise un emoji spécifique. |
 | `?dazonlyview <numéro>` | **Focus Vision.** Le bot ne regardera que les statuts de ce numéro. |
-| `?dazantionly <add/remove/list/off> [num/here]` | **Focus Anti-Delete.** Gère la liste des cibles à surveiller. **Récupère désormais les photos/vidéos supprimées !** |
-| `?dazvvonly <add/remove/list/off> [num/here]` | **Focus Vue Unique.** Gère la liste des cibles à surveiller pour les médias éphémères. |
+| `?dazdiscrete add <numéro>` | **Focus Discret.** Ne fait que "voir" les statuts de ce numéro, sans liker. |
+| `?dazdiscrete list` | Liste des cibles en mode discret. |
+| `?dazantionly <add/remove/list/off> [num/here]` | **Focus Anti-Delete.** Gère la liste des cibles à surveiller. **Récupère les photos/vidéos supprimées.** Les rapports arrivent dans ta discussion privée avec nom + type (privé / groupe / statut). |
+| `?dazvv [on/off]` | **Capture Vue Unique globale.** Quand activée, intercepte toutes les VV reçues (privé ou groupe) et les renvoie dans ta discussion perso. |
 | `?dazreset` | **Réinitialisation.** Désactive tous les modes Focus d'un coup. |
 | `?dazstats` | **Statistiques Globales.** Affiche les stats et le TOP 5. |
 | `?dazonly off` | Désactive le mode Focus Status. |
-| `?planstatus HH:mm` | **Programmer un statut.** Répondez à un texte, photo, vidéo ou audio avec cette commande pour le poster plus tard. |
-| `?planmsg HH:mm <numéro>` | **Programmer un message.** Répondez à un texte ou média pour l'envoyer à quelqu'un à une heure précise. |
+| `?planstatus HH:MM` (ou `?ps`) | **Programmer un statut.** Répondez à un texte, photo, vidéo ou audio. Accepte aussi `JJ/MM HH:MM` et `JJ/MM/AAAA HH:MM`. |
+| `?planmsg HH:MM <numéro>` (ou `?pm`) | **Programmer un message privé.** Même syntaxe que `?planstatus` + le numéro en dernier token. |
+| `?planlist` (ou `?pl`) | Affiche toutes les tâches programmées. |
+| `?plancancel <id>` (ou `?pc`) | Annule une tâche précise. |
+| `?planreset` | Supprime toutes les tâches programmées. |
 | `?menu` (ou `?help`) | **Menu.** Affiche toutes les fonctionnalités du bot. |
 
 ---
