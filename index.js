@@ -46,30 +46,38 @@ let focusTargets = new Map(); // Store JID -> { emoji: string }
 let discreteTargets = new Set(); // Store JIDs for view-only
 let focusJid = null; // Legacy single-target focus view
 let focusViewOnly = false; // Legacy, will be removed or repurposed
-let focusVVJids = new Set();
 let reactionSticker = null;
 let isViewOnly = false;
 let activeSocket = null;
 
-// Persistance du focus VV : on garde les cibles entre deux redémarrages du bot
-// sinon l'utilisateur doit refaire `?dazvv add` à chaque fois et la commande a
-// l'air cassée alors que c'est juste la mémoire qui a été vidée.
+// Persistance VV : on stocke un seul booléen ON/OFF pour intercepter toutes
+// les Vues Uniques, peu importe la provenance. Le user ne veut plus de ciblage
+// par numéro — trop de cas limites (LID vs PN, typo de numéro, …). Plus simple
+// = plus fiable. Le fichier est gardé entre deux redémarrages sinon il faut
+// ré-activer à chaque boot.
 const FOCUS_VV_FILE = path.join(__dirname, 'focus_vv.json');
+let captureAllVV = true; // défaut : ON
 const loadFocusVV = () => {
     try {
         if (fs.existsSync(FOCUS_VV_FILE)) {
             const raw = fs.readFileSync(FOCUS_VV_FILE, 'utf8');
-            const arr = JSON.parse(raw);
-            if (Array.isArray(arr)) {
-                focusVVJids = new Set(arr);
-                console.log(`[FOCUS-VV] ${focusVVJids.size} cible(s) chargée(s) depuis le disque: ${JSON.stringify(Array.from(focusVVJids))}`);
+            const parsed = JSON.parse(raw);
+            // Format nouveau : { enabled: true } | Format ancien : ["22955724800"]
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                captureAllVV = parsed.enabled !== false;
+            } else if (Array.isArray(parsed)) {
+                // Migration : l'ancien format avec liste => on active global.
+                captureAllVV = true;
             }
+            console.log(`[VV] Interception globale : ${captureAllVV ? 'ACTIVÉE' : 'DÉSACTIVÉE'}`);
+        } else {
+            console.log(`[VV] Pas de fichier d'état, défaut ACTIVÉE.`);
         }
-    } catch (e) { console.log(`[FOCUS-VV] Impossible de charger: ${e.message}`); }
+    } catch (e) { console.log(`[VV] Impossible de charger: ${e.message}`); }
 };
 const saveFocusVV = () => {
-    try { fs.writeFileSync(FOCUS_VV_FILE, JSON.stringify(Array.from(focusVVJids)), 'utf8'); }
-    catch (e) { console.log(`[FOCUS-VV] Impossible de sauvegarder: ${e.message}`); }
+    try { fs.writeFileSync(FOCUS_VV_FILE, JSON.stringify({ enabled: captureAllVV }), 'utf8'); }
+    catch (e) { console.log(`[VV] Impossible de sauvegarder: ${e.message}`); }
 };
 loadFocusVV();
 
@@ -511,41 +519,15 @@ async function connectToWhatsApp() {
                     const senderPhoneNumber = (resolvedSenderPn || senderJid).split('@')[0].split(':')[0];
                     const isGroupChat = remoteJid.endsWith('@g.us');
 
-                    // --- FOCUS VV ---
-                    if (focusVVJids.size > 0) {
-                        // On collecte tous les identifiants candidats pour la VV : numéro résolu,
-                        // JID brut, JID alt, etc. Puis on essaie de matcher chaque entrée de la
-                        // liste focus contre n'importe lequel. Ça rend robuste aux cas où le
-                        // même contact arrive parfois en @lid et parfois en @s.whatsapp.net.
-                        const candidates = new Set();
-                        const pushRaw = (v) => {
-                            if (!v) return;
-                            candidates.add(v);
-                            const bare = String(v).split('@')[0].split(':')[0];
-                            if (bare) candidates.add(bare);
-                        };
-                        pushRaw(senderJid);
-                        pushRaw(participantJid);
-                        pushRaw(resolvedSenderPn);
-                        pushRaw(msg.key.participantPn);
-                        pushRaw(remoteJid);
-                        pushRaw(resolvedRemotePn);
-                        pushRaw(msg.key.remoteJidAlt);
-                        pushRaw(senderPhoneNumber);
-
-                        const isTargeted = Array.from(focusVVJids).some(jid => {
-                            // Les entrées de la liste peuvent être :
-                            //   - un numéro ("22955724800") : match sur n'importe quel identifiant
-                            //   - un JID groupe ("xxx@g.us") : match sur le chat
-                            if (jid.endsWith('@g.us')) return remoteJid === jid || resolvedRemotePn === jid;
-                            return candidates.has(jid);
-                        });
-                        console.log(`[VV-FILTER] candidats=${JSON.stringify(Array.from(candidates))} liste=${JSON.stringify(Array.from(focusVVJids))} → ${isTargeted ? 'CIBLÉ' : 'IGNORÉ'}`);
-                        if (!isTargeted) {
-                            console.log(`[VV-FILTER] Vue Unique de +${senderPhoneNumber} ignorée (focus actif, non ciblée)`);
-                            return;
-                        }
+                    // --- FILTRE GLOBAL VV ---
+                    // Plus de ciblage par numéro : soit on intercepte TOUT, soit rien.
+                    // Le user trouvait le focus trop capricieux (un typo de numéro
+                    // et plus rien ne passe). ON par défaut.
+                    if (!captureAllVV) {
+                        console.log(`[VV] Vue Unique de +${senderPhoneNumber} ignorée (interception désactivée)`);
+                        return;
                     }
+                    console.log(`[VV] Interception globale active → capture VV de +${senderPhoneNumber}`);
 
                     const ownerJid = socket.user.id.split(':')[0] + '@s.whatsapp.net';
                     const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: socket.updateMediaMessage });
@@ -658,7 +640,7 @@ async function connectToWhatsApp() {
                     isViewOnly = false;
                     fixedEmoji = null;
                     focusViewOnly = false;
-                    focusVVJids.clear();
+                    captureAllVV = true;
                     saveFocusVV();
                     antiDelete.clearFocus();
                     await socket.sendMessage(targetChat, { text: `🧹 *RÉINITIALISATION COMPLÈTE*\n\n- Focus Status : Vidé\n- Liste Discrète : Vidée\n- Auto-Like : ON ✅\n- Vision Seule : OFF ❌\n- Anti-Delete : Reset\n\nLe bot est revenu à sa configuration d'origine.` }, { quoted: msg });
@@ -759,69 +741,24 @@ async function connectToWhatsApp() {
                         }
                     }
                 } else if (cmd === 'dazvvonly' || cmd === 'dazvv') {
-                    const action = textLower.split(/\s+/)[1];
-                    const rawTarget = textContent.trim().split(/\s+/)[2];
+                    const action = (textLower.split(/\s+/)[1] || 'status').trim();
 
-                    const formatEntry = (e) => e.endsWith('@g.us') ? `📛 groupe ${e}` : `👤 +${e}`;
-
-                    if (!action || action === 'list') {
-                        const list = Array.from(focusVVJids).map(formatEntry).join('\n') || "Aucune cible.";
-                        return await socket.sendMessage(targetChat, { text: `👁️ *FOCUS VUE UNIQUE*\n\nSi vide : toutes les VV interceptées.\nSinon : uniquement celles des cibles.\n\nUsage :\n- ${currentPrefix}dazvv add [num]        (cible une personne)\n- ${currentPrefix}dazvv addgroup here    (cible le groupe courant)\n- ${currentPrefix}dazvv addgroup <jid>    (cible un groupe précis)\n- ${currentPrefix}dazvv remove [num]\n- ${currentPrefix}dazvv removegroup here\n- ${currentPrefix}dazvv list\n- ${currentPrefix}dazvv off\n\n${list}` }, { quoted: msg });
+                    if (action === 'on') {
+                        captureAllVV = true;
+                        saveFocusVV();
+                        console.log(`[VV] Interception globale ACTIVÉE par commande.`);
+                        return await socket.sendMessage(targetChat, { text: `✅ Interception Vue Unique *ACTIVÉE* (globale, peu importe la provenance).\n\n⚠️ WhatsApp ne route pas toujours les VV aux appareils liés. Si rien n'arrive, regarde les logs [VV-RAW] pour voir si Baileys a effectivement reçu la VV.` }, { quoted: msg });
                     }
 
                     if (action === 'off') {
-                        focusVVJids.clear();
+                        captureAllVV = false;
                         saveFocusVV();
-                        console.log(`[FOCUS-VV] Liste vidée par commande.`);
-                        return await socket.sendMessage(targetChat, { text: `✅ Focus Vue Unique désactivé (toutes les VV seront capturées).` }, { quoted: msg });
+                        console.log(`[VV] Interception globale DÉSACTIVÉE par commande.`);
+                        return await socket.sendMessage(targetChat, { text: `✅ Interception Vue Unique *DÉSACTIVÉE*. Les VV ne seront plus capturées.` }, { quoted: msg });
                     }
 
-                    if (action === 'add' || action === 'remove') {
-                        if (!rawTarget) return await socket.sendMessage(targetChat, { text: `❌ Spécifie un numéro, ex: ${currentPrefix}dazvv add 22955724800` }, { quoted: msg });
-                        const cleanNumber = rawTarget.replace(/\D/g, '');
-                        if (cleanNumber.length < 5) return await socket.sendMessage(targetChat, { text: `❌ Numéro invalide.` }, { quoted: msg });
-                        if (action === 'add') {
-                            focusVVJids.add(cleanNumber);
-                            saveFocusVV();
-                            console.log(`[FOCUS-VV] Ajout numéro +${cleanNumber}. Liste actuelle: ${JSON.stringify(Array.from(focusVVJids))}`);
-                            return await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} ajouté au focus Vue Unique.
-
-⚠️ Rappel : WhatsApp n'envoie pas toujours les VV aux appareils liés. Si tu vois rien arriver, c'est probablement cette limite côté WhatsApp (pas un bug du bot). Voir les logs [VV-RAW] pour vérifier si Baileys a bien reçu quelque chose.` }, { quoted: msg });
-                        } else {
-                            focusVVJids.delete(cleanNumber);
-                            saveFocusVV();
-                            console.log(`[FOCUS-VV] Retrait numéro +${cleanNumber}. Liste actuelle: ${JSON.stringify(Array.from(focusVVJids))}`);
-                            return await socket.sendMessage(targetChat, { text: `✅ +${cleanNumber} retiré du focus Vue Unique.` }, { quoted: msg });
-                        }
-                    }
-
-                    if (action === 'addgroup' || action === 'removegroup') {
-                        if (!rawTarget) return await socket.sendMessage(targetChat, { text: `❌ Spécifie 'here' (groupe courant) ou un JID de groupe xxx@g.us.` }, { quoted: msg });
-                        let groupJid = null;
-                        if (rawTarget.toLowerCase() === 'here') {
-                            if (!remoteJid.endsWith('@g.us')) {
-                                return await socket.sendMessage(targetChat, { text: `❌ 'here' ne marche que quand tu envoies la commande *depuis* un groupe.` }, { quoted: msg });
-                            }
-                            groupJid = remoteJid;
-                        } else if (rawTarget.endsWith('@g.us')) {
-                            groupJid = rawTarget;
-                        } else {
-                            return await socket.sendMessage(targetChat, { text: `❌ JID de groupe invalide. Utilise 'here' ou un JID xxx@g.us.` }, { quoted: msg });
-                        }
-                        if (action === 'addgroup') {
-                            focusVVJids.add(groupJid);
-                            saveFocusVV();
-                            console.log(`[FOCUS-VV] Ajout groupe ${groupJid}. Liste actuelle: ${JSON.stringify(Array.from(focusVVJids))}`);
-                            return await socket.sendMessage(targetChat, { text: `✅ Groupe ${groupJid} ajouté au focus Vue Unique.` }, { quoted: msg });
-                        } else {
-                            focusVVJids.delete(groupJid);
-                            saveFocusVV();
-                            console.log(`[FOCUS-VV] Retrait groupe ${groupJid}. Liste actuelle: ${JSON.stringify(Array.from(focusVVJids))}`);
-                            return await socket.sendMessage(targetChat, { text: `✅ Groupe ${groupJid} retiré du focus Vue Unique.` }, { quoted: msg });
-                        }
-                    }
-
-                    await socket.sendMessage(targetChat, { text: `❌ Action inconnue. Utilise add/remove/addgroup/removegroup/list/off.` }, { quoted: msg });
+                    // 'status', 'list', ou rien : on affiche l'état actuel + l'aide
+                    return await socket.sendMessage(targetChat, { text: `👁️ *INTERCEPTION VUE UNIQUE*\n\nÉtat actuel : ${captureAllVV ? '🟢 ACTIVÉE' : '🔴 DÉSACTIVÉE'}\n\nQuand activée, toute Vue Unique reçue (privé ou groupe, peu importe l'auteur) est téléchargée automatiquement et renvoyée dans ta discussion personnelle.\n\nUsage :\n- ${currentPrefix}dazvv on      (active la capture globale)\n- ${currentPrefix}dazvv off     (désactive)\n- ${currentPrefix}dazvv         (affiche l'état)` }, { quoted: msg });
                 } else if (cmd === 'dazsticker') {
                     const contextInfo = msg.message.extendedTextMessage?.contextInfo;
                     const quoted = contextInfo?.quotedMessage;
