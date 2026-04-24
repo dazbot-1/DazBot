@@ -1483,7 +1483,7 @@ Le bot est actuellement connecté à WhatsApp — WhatsApp n'émet des QR codes 
                         // préserver la casse du JID (textLower casserait sinon
                         // les parties majuscules potentielles — même si @g.us
                         // est minuscule, défensif pour le futur).
-                        const rawParts = text.split(/\s+/);
+                        const rawParts = textContent.split(/\s+/);
                         const rawJid = (rawParts[3] || '').trim();
 
                         if (sub === 'add') {
